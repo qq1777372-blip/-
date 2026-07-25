@@ -1,0 +1,62 @@
+name: Build and release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example 2026.07.26.18
+        required: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Validate backend
+        run: |
+          python -m pip install -r requirements.txt
+          python -m compileall -q main.py app schemas.py
+          python -m unittest discover -s tests -v
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Stamp release
+        run: |
+          cat > frontend/dist/version.json <<EOF
+          {"version":"${{ inputs.version }}","released_at":"$(date -Iseconds)","source":"${GITHUB_SHA}"}
+          EOF
+
+      - name: Package release
+        run: |
+          tar -czf backend.tar.gz main.py schemas.py database.py models.py requirements.txt app alembic alembic.ini scripts tests
+          tar -czf frontend.tar.gz -C frontend/dist .
+
+      - name: Upload and deploy
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.PRODUCTION_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key root@"$DEPLOY_HOST" "mkdir -p /tmp/ruoshop-release-${{ inputs.version }}"
+          scp -i ~/.ssh/deploy_key backend.tar.gz frontend.tar.gz root@"$DEPLOY_HOST":/tmp/ruoshop-release-${{ inputs.version }}/
+          scp -i ~/.ssh/deploy_key scripts/deploy_remote.sh root@"$DEPLOY_HOST":/tmp/ruoshop-release-${{ inputs.version }}/
+          ssh -i ~/.ssh/deploy_key root@"$DEPLOY_HOST" "bash /tmp/ruoshop-release-${{ inputs.version }}/deploy_remote.sh '${{ inputs.version }}' '/tmp/ruoshop-release-${{ inputs.version }}'"
