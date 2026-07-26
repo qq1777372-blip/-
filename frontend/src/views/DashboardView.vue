@@ -499,7 +499,7 @@ onMounted(() => {
 
 .dashboard-surface__section {
   min-width: 0;
-  padding: 22px;
+  padding: 18px;
 }
 
 .dashboard-surface__section + .dashboard-surface__section {
@@ -523,14 +523,14 @@ onMounted(() => {
 }
 
 .dashboard-metric-card {
-  border: 1px solid #dfe7f3;
+  border: 1px solid #e5e7eb;
   border-radius: var(--panel-radius);
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  background: #ffffff;
 }
 
 .dashboard-metric-card--accent {
-  border-color: #cfe0ff;
-  background: linear-gradient(180deg, #ffffff 0%, #f3f8ff 100%);
+  border-color: #c7d2fe;
+  background: #ffffff;
 }
 
 .dashboard-metric-card--accent .metric-value {
@@ -540,10 +540,10 @@ onMounted(() => {
 .reminder-shell,
 .summary-shell,
 .server-shell {
-  padding: 20px 22px 22px;
-  border: 1px solid #e6edf7;
+  padding: 18px;
+  border: 1px solid #e5e7eb;
   border-radius: var(--panel-radius);
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  background: #ffffff;
 }
 
 .reminder-head,
@@ -679,10 +679,16 @@ onMounted(() => {
   display: grid;
   gap: 9px;
   padding: 16px;
-  border: 1px solid #dfe7f3;
-  border-radius: 14px;
-  background: #fbfdff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  animation: server-card-enter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
+
+.server-metric-card:nth-child(2) { animation-delay: 0.04s; }
+.server-metric-card:nth-child(3) { animation-delay: 0.08s; }
+.server-metric-card:nth-child(4) { animation-delay: 0.12s; }
+.server-metric-card:nth-child(5) { animation-delay: 0.16s; }
 
 .server-metric-card > span,
 .server-metric-card > small,
@@ -714,9 +720,25 @@ onMounted(() => {
   min-width: 0;
   overflow: hidden;
   padding: 16px;
-  border: 1px solid #e6edf7;
-  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
   background: #ffffff;
+  animation: server-card-enter 0.34s 0.12s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.server-list-panel--database {
+  animation-delay: 0.18s;
+}
+
+@keyframes server-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(9px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .server-list-title {

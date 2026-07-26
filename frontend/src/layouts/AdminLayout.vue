@@ -317,7 +317,9 @@ async function handleUserCommand(command: string | number | object) {
 
       <el-main class="layout-main">
         <router-view v-slot="{ Component }">
-          <component :is="Component" :key="route.fullPath" />
+          <Transition name="page-fade" mode="out-in">
+            <component :is="Component" :key="route.fullPath" />
+          </Transition>
         </router-view>
       </el-main>
     </el-container>
@@ -452,11 +454,12 @@ async function handleUserCommand(command: string | number | object) {
   height: 100vh;
   min-height: 100vh;
   overflow: hidden;
-  padding: 18px 14px;
-  background: linear-gradient(180deg, var(--nav-bg) 0%, var(--nav-bg-secondary) 100%);
+  padding: 16px 12px;
+  background: var(--nav-bg);
   color: var(--nav-text);
-  box-shadow: 8px 0 30px rgba(15, 23, 42, 0.12);
+  box-shadow: none;
   transition: width 0.2s ease, padding 0.2s ease;
+  animation: sidebar-enter 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .mobile-aside {
@@ -467,9 +470,9 @@ async function handleUserCommand(command: string | number | object) {
 .layout-brand {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 12px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 12px;
+  padding: 4px 8px 22px;
+  border-bottom: 0;
 }
 
 .layout-brand-copy {
@@ -479,10 +482,10 @@ async function handleUserCommand(command: string | number | object) {
 .brand-logo {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #1677ff, #36cfc9);
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #6366f1;
   color: #ffffff;
   font-weight: 800;
 }
@@ -490,13 +493,13 @@ async function handleUserCommand(command: string | number | object) {
 .layout-brand strong {
   display: block;
   color: #ffffff;
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .layout-brand span {
   display: block;
   margin-top: 4px;
-  color: rgba(255, 255, 255, 0.68);
+  color: #9ca3af;
   font-size: 12px;
 }
 
@@ -505,7 +508,7 @@ async function handleUserCommand(command: string | number | object) {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  margin-top: 16px;
+  margin-top: 0;
   border-right: none;
   min-width: 0;
 }
@@ -525,8 +528,17 @@ async function handleUserCommand(command: string | number | object) {
 
 .layout-menu :deep(.el-menu-item),
 .layout-menu :deep(.el-sub-menu__title) {
-  height: 46px;
-  border-radius: 12px;
+  height: 40px;
+  margin-bottom: 2px;
+  border-radius: 8px;
+  font-size: 13px;
+  transition: color 0.16s ease, background-color 0.16s ease;
+}
+
+.layout-menu :deep(.el-menu-item:hover),
+.layout-menu :deep(.el-sub-menu__title:hover) {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
 }
 
 .layout-menu :deep(.el-menu--collapse) {
@@ -534,7 +546,12 @@ async function handleUserCommand(command: string | number | object) {
 }
 
 .layout-menu :deep(.el-menu-item.is-active) {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.layout-menu :deep(.el-menu-item.is-active .el-icon),
+.layout-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title .el-icon) {
+  animation: nav-icon-pop 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .layout-version {
@@ -546,16 +563,16 @@ async function handleUserCommand(command: string | number | object) {
 }
 
 .aside-collapse-button {
-  margin-top: 18px;
+  margin-top: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   width: 100%;
-  min-height: 50px;
+  min-height: 40px;
   padding: 0 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   color: rgba(255, 255, 255, 0.82);
   text-align: center;
@@ -605,7 +622,11 @@ async function handleUserCommand(command: string | number | object) {
   justify-content: space-between;
   gap: 18px;
   min-width: 0;
-  padding: 18px 24px 10px;
+  min-height: 60px;
+  padding: 8px 24px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
+  animation: header-enter 0.28s ease-out both;
 }
 
 .header-left {
@@ -621,12 +642,13 @@ async function handleUserCommand(command: string | number | object) {
 
 .layout-breadcrumb {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .layout-title {
-  margin: 6px 0 0;
-  font-size: 28px;
+  margin: 2px 0 0;
+  font-size: 21px;
+  font-weight: 600;
   line-height: 1.1;
 }
 
@@ -645,29 +667,24 @@ async function handleUserCommand(command: string | number | object) {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 44px;
-  padding: 0 14px;
+  min-height: 36px;
+  padding: 0 11px;
   border: 1px solid var(--panel-border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--panel-bg);
   color: var(--text-main);
   cursor: pointer;
-  transition:
-    transform 0.2s ease,
-    box-shadow 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .header-shortcut:hover {
-  border-color: #cdd8e7;
-  box-shadow: 0 10px 24px rgba(31, 41, 55, 0.1);
-  transform: translateY(-1px);
+  border-color: #d1d5db;
+  background: #f3f4f6;
 }
 
 .header-shortcut--active {
-  border-color: rgba(22, 119, 255, 0.26);
-  background: #eef5ff;
+  border-color: #c7d2fe;
+  background: #eef2ff;
   color: var(--brand-primary);
 }
 
@@ -680,28 +697,24 @@ async function handleUserCommand(command: string | number | object) {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  padding: 8px 12px;
+  padding: 4px 8px 4px 12px;
   border: 1px solid var(--panel-border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--panel-bg);
 }
 
 .user-chip-button {
   cursor: pointer;
-  transition:
-    transform 0.2s ease,
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .user-chip-button:hover {
-  border-color: #cdd8e7;
-  box-shadow: 0 10px 24px rgba(31, 41, 55, 0.1);
-  transform: translateY(-1px);
+  border-color: #d1d5db;
+  background: #f9fafb;
 }
 
 .user-chip-button:focus-visible {
-  outline: 2px solid rgba(22, 119, 255, 0.3);
+  outline: 2px solid rgba(99, 102, 241, 0.3);
   outline-offset: 2px;
 }
 
@@ -717,8 +730,8 @@ async function handleUserCommand(command: string | number | object) {
   height: 28px;
   overflow: hidden;
   border-radius: 999px;
-  background: linear-gradient(135deg, #1677ff, #36cfc9);
-  color: #ffffff;
+  background: #e0e7ff;
+  color: #4f46e5;
   font-size: 13px;
   font-weight: 700;
 }
@@ -741,7 +754,35 @@ async function handleUserCommand(command: string | number | object) {
 }
 
 .layout-main {
-  padding: 10px 24px 24px;
+  padding: 20px 24px 24px;
+}
+
+@keyframes sidebar-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes header-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes nav-icon-pop {
+  0% { transform: scale(0.84); }
+  70% { transform: scale(1.08); }
+  100% { transform: scale(1); }
 }
 
 .layout-mobile-toolbar {
