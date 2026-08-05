@@ -1,0 +1,28 @@
+[Unit]
+Description=FastAPIProject Uvicorn Service
+After=network.target
+
+[Service]
+Type=simple
+User=fastapiproject
+Group=fastapiproject
+WorkingDirectory=/srv/fastapiproject
+Environment=PYTHONUNBUFFERED=1
+Environment=APP_ENV=production
+Environment=APP_DEBUG=false
+Environment=SESSION_COOKIE_SECURE=false
+Environment=TRUST_PROXY_HEADERS=true
+Environment=LICENSE_SERVER_BASE_URL=http://127.0.0.1:15000
+# secret: set in drop-in, not here
+Environment=LICENSE_ADMIN_TOKEN=__REPLACE_ME__
+ExecStart=/srv/fastapiproject/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+UMask=027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/fastapiproject
+
+[Install]
+WantedBy=multi-user.target

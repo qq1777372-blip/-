@@ -1,0 +1,100 @@
+# 部署配置说明
+
+记录 `xiaoxu666.asia` 后台服务在服务器上的运行时配置。**本目录只有模板，不含任何密钥值。**
+
+## 为什么需要这个目录
+
+应用代码在 git 里，但服务真正跑起来还依赖三样不在 git 里的东西：
+
+1. systemd 服务定义和环境变量（在 `/etc/systemd/system/`）
+2. nginx 站点配置（在 `/etc/nginx/sites-available/`）
+3. 两个加密密钥（一个是环境变量，一个是文件）
+
+以前这些只存在于服务器磁盘上，没有任何记录。本目录补上「需要配什么」的清单，
+避免重建服务器时漏配。真实值仍然只在服务器和你的密码管理器里。
+
+## 当前生产环境
+
+| 项目 | 值 |
+|---|---|
+| 主机 | `ubuntu@152.32.174.85`（UCloud 香港） |
+| SSH 密钥 | `D:\ServerKeys\xiaoxu-ucloud-ed25519` |
+| 应用目录 | `/srv/fastapiproject` |
+| 运行用户 | `fastapiproject` |
+| 应用端口 | `127.0.0.1:8000`（只监听本地，由 nginx 转发） |
+| 公网地址 | `https://xiaoxu666.asia/ui/` |
+| systemd 单元 | `fastapiproject.service` |
+| 前端产物 | `/srv/fastapiproject/frontend/dist` |
+| 手机 App 产物 | `/srv/fastapiproject/app-frontend-dist` |
+| 生意参谋数据库 | `/srv/fastapiproject/sycm_data/sycm_data.db` |
+
+同机还有一个 `fastapiproject-old-server-tunnel.service`，用 SSH 隧道连到旧的
+阿里云服务器 `121.196.150.21`，供 `/software/` 和 `/wpfapp1/` 两个路径转发使用。
+
+## 目录内容
+
+```
+deploy/
+├── README.md                              本文件
+├── .env.example                           全部环境变量清单（只有名字，没有值）
+├── systemd/
+│   ├── fastapiproject.service.template    主服务单元
+│   └── drop-ins.template.md               5 个 drop-in 配置说明
+└── nginx/
+    └── xiaoxu.conf.template               站点配置
+```
+
+## 两个不可再生的密钥
+
+这两样丢了无法恢复，**必须单独备份到密码管理器**：
+
+| 密钥 | 位置 | 丢失后果 |
+|---|---|---|
+| `AUTH_ENCRYPTION_KEY` | systemd drop-in `auth-security.conf` | 已启用二次验证的账号，TOTP 密钥无法解密 |
+| `account-password.key` | `/srv/fastapiproject/.runtime-secrets/`（44 字节文件） | 店铺账号里所有已加密的密码字段无法解开 |
+
+其余令牌（`SYCM_UPLOAD_TOKEN`、`DINGTALK_PROFIT_SYNC_TOKEN`、`LICENSE_ADMIN_TOKEN`、
+`DINGTALK_ROBOT_WEBHOOK`）可以随时更换，代价只是同步更新调用方配置。
+
+其中 `SYCM_UPLOAD_TOKEN` 更换后，本地生意参谋采集程序也要改成同一个值，
+否则采集端无法上传数据和领取同步任务。
+
+## 备份现有配置
+
+在服务器上执行，把当前真实配置（含密钥值）导出到一个文件，然后自己保存到安全位置：
+
+```bash
+sudo sh -c '
+  echo "=== fastapiproject.service ==="
+  cat /etc/systemd/system/fastapiproject.service
+  echo
+  echo "=== drop-ins ==="
+  for f in /etc/systemd/system/fastapiproject.service.d/*.conf; do
+    echo "--- $f ---"; cat "$f"
+  done
+  echo
+  echo "=== account-password.key (base64) ==="
+  base64 -w0 /srv/fastapiproject/.runtime-secrets/account-password.key; echo
+' > ~/fastapiproject-config-backup.txt
+```
+
+**这个文件含明文密钥，不要提交到 git，不要放在项目目录里。**
+下载到本地后建议存进密码管理器，然后删除服务器上的副本。
+
+## 重建服务器的步骤
+
+1. 装依赖：Python 3.12、nginx、certbot
+2. 建用户和目录：`useradd -r fastapiproject`，代码放 `/srv/fastapiproject`
+3. 建虚拟环境：`python3 -m venv .venv`，然后 `.venv/bin/pip install -r requirements.txt`
+4. 按 `systemd/` 下的模板创建服务单元和 5 个 drop-in，填入真实密钥值
+5. 恢复 `.runtime-secrets/account-password.key`（权限 `640`，属主 `fastapiproject`）
+6. 恢复数据库 `shop_records.db` 和 `sycm_data/sycm_data.db`
+7. 按 `nginx/` 模板配置站点，用 certbot 申请证书
+8. `systemctl daemon-reload && systemctl enable --now fastapiproject`
+9. 验证：`curl -s http://127.0.0.1:8000/api/health`
+
+## 已知问题
+
+`scripts/release.ps1` 的默认部署目标是 `121.196.150.21` / `root` / `xiaoxu.pem`，
+指向的是旧的阿里云服务器，**不是**当前生产环境。直接运行会发布到错误的机器上。
+使用前必须显式传参，或先修正脚本里的默认值。
