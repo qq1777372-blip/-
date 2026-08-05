@@ -16,6 +16,7 @@ export default defineConfig({
     proxy: {
       '/auth': 'http://127.0.0.1:8000',
       '/dashboard': 'http://127.0.0.1:8000',
+      '/warehouse': 'http://127.0.0.1:8000',
       '/shop-records': 'http://127.0.0.1:8000',
       '/custom-fields': 'http://127.0.0.1:8000',
       '/license-records': 'http://127.0.0.1:8000',

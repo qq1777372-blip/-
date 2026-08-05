@@ -54,6 +54,7 @@ const tableRef = ref<TableInstance>()
 
 const dialogVisible = ref(false)
 const columnDialogVisible = ref(false)
+const columnCreateDialogVisible = ref(false)
 const editingRecordId = ref<number | null>(null)
 const imageActionLoadingId = ref<number | null>(null)
 const previewDialogVisible = ref(false)
@@ -192,12 +193,6 @@ function moveLicenseColumn(column: LicenseColumnSetting, direction: 'up' | 'down
   void persistLicenseColumns()
 }
 
-function resetLicenseColumns() {
-  licenseColumns.value = createDefaultLicenseColumns()
-  void persistLicenseColumns()
-  ElMessage.success('表头已恢复默认')
-}
-
 function updateLicenseColumnWidth(column: LicenseColumnSetting, value: number | undefined) {
   column.minWidth = Math.min(500, Math.max(100, Number(value) || 100))
   saveLicenseColumns()
@@ -235,6 +230,7 @@ function addLicenseColumn() {
   licenseColumns.value.push({ key: `custom_${Date.now()}`, label, minWidth: 180, visible: true, custom: true })
   customColumnLabel.value = ''
   void persistLicenseColumns()
+  columnCreateDialogVisible.value = false
 }
 
 function removeLicenseColumn(column: LicenseColumnSetting) {
@@ -255,8 +251,7 @@ const form = reactive({
 let objectPreviewUrl: string | null = null
 
 const canEditLicenses = computed(() => {
-  const role = authStore.currentUser?.role
-  return role === 'editor' || role === 'superadmin'
+  return authStore.canWrite('licenses')
 })
 
 const editingImageRecord = computed(() =>
@@ -266,7 +261,6 @@ const editingImageRecord = computed(() =>
 )
 
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 360))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 300))
 const pageSize = computed(() => 20)
 
 const filteredRecords = computed(() => {
@@ -907,7 +901,7 @@ onMounted(() => {
       </div>
 
       <div v-else class="table-area fixed-list-shell">
-        <div v-loading="loading" class="license-card-list fixed-list-mobile" :style="{ maxHeight: `${mobileListHeight}px` }">
+        <div v-loading="loading" class="license-card-list fixed-list-mobile">
           <template v-if="paginatedRecords.length">
             <article
               v-for="record in paginatedRecords"
@@ -1022,9 +1016,12 @@ onMounted(() => {
     </section>
 
     <el-dialog v-model="columnDialogVisible" title="表头管理" width="760px" destroy-on-close>
-      <div class="license-column-create">
-        <el-input v-model="customColumnLabel" placeholder="输入新表头名称" maxlength="30" @keyup.enter="addLicenseColumn" />
-        <el-button type="primary" :icon="CirclePlus" @click="addLicenseColumn">新增表头</el-button>
+      <div class="table-header-manager-head">
+        <div>
+          <strong>当前表头</strong>
+          <span>调整显示状态、排列顺序和列宽，共 {{ licenseColumns.length }} 项。</span>
+        </div>
+        <el-button type="primary" :icon="CirclePlus" @click="columnCreateDialogVisible = true">新增表头</el-button>
       </div>
       <div class="license-column-list">
         <div v-for="(column, index) in licenseColumns" :key="column.key" class="license-column-item">
@@ -1069,8 +1066,25 @@ onMounted(() => {
       </div>
 
       <template #footer>
-        <el-button @click="resetLicenseColumns">恢复默认</el-button>
         <el-button type="primary" @click="columnDialogVisible = false">完成</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="columnCreateDialogVisible" title="新增表头" width="440px" destroy-on-close append-to-body>
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item label="表头名称" required>
+          <el-input
+            v-model="customColumnLabel"
+            placeholder="例如：经营范围"
+            maxlength="30"
+            show-word-limit
+            @keyup.enter="addLicenseColumn"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="columnCreateDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="addLicenseColumn">确认新增</el-button>
       </template>
     </el-dialog>
 
@@ -1281,14 +1295,34 @@ onMounted(() => {
 
 .license-column-list {
   display: grid;
-  gap: 8px;
+  gap: 12px;
+  max-height: 480px;
+  padding-right: 6px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
-.license-column-create {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+.table-header-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 14px;
+}
+
+.table-header-manager-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.table-header-manager-head strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.table-header-manager-head span {
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .license-column-item {
@@ -1297,10 +1331,11 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 54px;
-  padding: 8px 10px 8px 14px;
+  min-height: 72px;
+  padding: 14px 16px;
   border: 1px solid var(--panel-border);
-  border-radius: 6px;
+  border-radius: 8px;
+  background: #f8fafc;
 }
 
 .license-column-item__name {

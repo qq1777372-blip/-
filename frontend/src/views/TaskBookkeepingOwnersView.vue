@@ -28,15 +28,13 @@ const owners = ref<TaskBookkeepingOwner[]>([])
 const records = ref<TaskBookkeepingRecord[]>([])
 const pageSize = 20
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 360))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 300))
 
 const form = reactive({
   name: '',
 })
 
 const canEdit = computed(() => {
-  const role = authStore.currentUser?.role
-  return role === 'editor' || role === 'superadmin'
+  return authStore.canWrite('task_bookkeeping')
 })
 
 const usageCountMap = computed(() => {
@@ -249,7 +247,6 @@ onMounted(loadData)
         <div
           v-loading="loading"
           class="owner-card-list fixed-list-mobile"
-          :style="{ maxHeight: `${mobileListHeight}px` }"
         >
           <template v-if="filteredOwners.length">
             <article v-for="owner in paginatedOwners" :key="owner.id" class="owner-mobile-card">

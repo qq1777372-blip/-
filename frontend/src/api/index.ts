@@ -8,7 +8,9 @@ import type {
   AccountUsageRecordPayload,
   AdminSessionInfo,
   AdminUser,
+  AdminUserAccessPayload,
   AdminUserCreatePayload,
+  AdminUserPasswordResetPayload,
   AdminUserStatusPayload,
   AuditLog,
   BatchActionResult,
@@ -50,6 +52,9 @@ import type {
   TaskBookkeepingShop,
   TaskBookkeepingShopPayload,
   TaskBookkeepingSummary,
+  TotpSetupResponse,
+  SystemAlertList,
+  SystemSettings,
 } from '../types/api'
 
 export async function fetchCurrentUser() {
@@ -94,6 +99,26 @@ export async function changePassword(payload: ChangePasswordPayload) {
   return data
 }
 
+export async function setupTotp(currentPassword: string) {
+  const { data } = await http.post<TotpSetupResponse>('/auth/totp/setup', {
+    current_password: currentPassword,
+  })
+  return data
+}
+
+export async function confirmTotp(secret: string, code: string) {
+  const { data } = await http.post<CurrentUser>('/auth/totp/confirm', { secret, code })
+  return data
+}
+
+export async function disableTotp(currentPassword: string, code: string) {
+  const { data } = await http.post<CurrentUser>('/auth/totp/disable', {
+    current_password: currentPassword,
+    code,
+  })
+  return data
+}
+
 export async function updateCurrentUserProfile(payload: CurrentUserProfilePayload) {
   const { data } = await http.patch<CurrentUser>('/auth/profile', payload)
   return data
@@ -114,6 +139,28 @@ export async function deleteCurrentUserAvatar() {
 
 export async function fetchDashboardStats() {
   const { data } = await http.get<DashboardStats>('/dashboard/stats')
+  return data
+}
+
+export async function fetchSystemAlerts(category = '', statusFilter = 'all') {
+  const { data } = await http.get<SystemAlertList>('/system-alerts', {
+    params: { category: category || undefined, status_filter: statusFilter },
+  })
+  return data
+}
+
+export async function updateSystemAlertStatus(alertKey: string, acknowledged: boolean) {
+  const { data } = await http.patch<SystemAlertList>(`/system-alerts/${encodeURIComponent(alertKey)}`, { acknowledged })
+  return data
+}
+
+export async function fetchSystemSettings() {
+  const { data } = await http.get<SystemSettings>('/system-settings')
+  return data
+}
+
+export async function saveSystemSettings(payload: SystemSettings) {
+  const { data } = await http.put<SystemSettings>('/system-settings', payload)
   return data
 }
 
@@ -519,6 +566,15 @@ export async function updateAdminUserStatus(userId: number, payload: AdminUserSt
   return data
 }
 
+export async function updateAdminUserAccess(userId: number, payload: AdminUserAccessPayload) {
+  const { data } = await http.patch<AdminUser>(`/admin-users/${userId}`, payload)
+  return data
+}
+
+export async function resetAdminUserPassword(userId: number, payload: AdminUserPasswordResetPayload) {
+  await http.patch(`/admin-users/${userId}/password`, payload)
+}
+
 export async function fetchSoftwareAdminUsers() {
   const { data } = await http.get<SoftwareAdminUser[]>('/software-admin/users')
   return data
@@ -601,3 +657,100 @@ export async function unbindLicenseAdminDevices(licenseKey: string, payload: Lic
   return data
 }
 
+export async function fetchWarehouseSummary() {
+  const { data } = await http.get<import('../types/api').WarehouseSummary>('/warehouse/summary')
+  return data
+}
+
+export async function fetchWarehouses() {
+  const { data } = await http.get<import('../types/api').Warehouse[]>('/warehouse/warehouses')
+  return data
+}
+
+export async function createWarehouse(payload: import('../types/api').WarehousePayload) {
+  const { data } = await http.post<import('../types/api').Warehouse>('/warehouse/warehouses', payload)
+  return data
+}
+
+export async function updateWarehouse(id: number, payload: import('../types/api').WarehousePayload) {
+  const { data } = await http.put<import('../types/api').Warehouse>(`/warehouse/warehouses/${id}`, payload)
+  return data
+}
+
+export async function fetchWarehouseProducts() {
+  const { data } = await http.get<import('../types/api').WarehouseProduct[]>('/warehouse/products')
+  return data
+}
+
+export async function createWarehouseProduct(payload: import('../types/api').WarehouseProductPayload) {
+  const { data } = await http.post<import('../types/api').WarehouseProduct>('/warehouse/products', payload)
+  return data
+}
+
+export async function updateWarehouseProduct(id: number, payload: import('../types/api').WarehouseProductPayload) {
+  const { data } = await http.put<import('../types/api').WarehouseProduct>(`/warehouse/products/${id}`, payload)
+  return data
+}
+
+export async function uploadWarehouseProductImage(id: number, file: File) {
+  const formData = new FormData()
+  formData.append('image', file)
+  const { data } = await http.post<import('../types/api').WarehouseProduct>(`/warehouse/products/${id}/image`, formData)
+  return data
+}
+
+export async function fetchWarehouseStocks() {
+  const { data } = await http.get<import('../types/api').WarehouseStock[]>('/warehouse/stocks')
+  return data
+}
+
+export async function fetchWarehouseInboundOrders() {
+  const { data } = await http.get<import('../types/api').WarehouseInboundOrder[]>('/warehouse/inbound-orders')
+  return data
+}
+
+export async function createWarehouseInboundOrder(payload: import('../types/api').WarehouseInboundOrderPayload) {
+  const { data } = await http.post<import('../types/api').WarehouseInboundOrder>('/warehouse/inbound-orders', payload)
+  return data
+}
+
+export async function updateWarehouseInboundOrder(id: number, payload: import('../types/api').WarehouseInboundOrderPayload) {
+  const { data } = await http.put<import('../types/api').WarehouseInboundOrder>(`/warehouse/inbound-orders/${id}`, payload)
+  return data
+}
+
+export async function cancelWarehouseInboundOrder(id: number) {
+  const { data } = await http.delete<import('../types/api').WarehouseInboundOrder>(`/warehouse/inbound-orders/${id}`)
+  return data
+}
+
+export async function fetchWarehouseOutboundOrders() {
+  const { data } = await http.get<import('../types/api').WarehouseOutboundOrder[]>('/warehouse/outbound-orders')
+  return data
+}
+
+export async function createWarehouseOutboundOrder(payload: import('../types/api').WarehouseOutboundOrderPayload) {
+  const { data } = await http.post<import('../types/api').WarehouseOutboundOrder>('/warehouse/outbound-orders', payload)
+  return data
+}
+
+export async function updateWarehouseOutboundStatus(
+  id: number,
+  payload: { status: import('../types/api').WarehouseOutboundStatus; carrier?: string | null; tracking_no?: string | null },
+) {
+  const { data } = await http.patch<import('../types/api').WarehouseOutboundOrder>(`/warehouse/outbound-orders/${id}/status`, payload)
+  return data
+}
+
+export async function fetchWarehouseMovements() {
+  const { data } = await http.get<import('../types/api').WarehouseStockMovement[]>('/warehouse/movements')
+  return data
+}
+
+
+export async function fetchSycmLatest(period: import('../types/api').SycmPeriod = 'today') {
+  const { data } = await http.get<import('../types/api').SycmShopSnapshot[]>('/api/sycm/latest', {
+    params: { period },
+  })
+  return data
+}

@@ -50,7 +50,6 @@ const form = reactive({
 const canManageLicenseKeys = computed(() => authStore.currentUser?.role === 'superadmin')
 const pageSize = computed(() => 20)
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 360))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 300))
 const selectedLicense = computed(() =>
   items.value.find((item) => item.license_key === selectedLicenseKey.value) ?? null,
 )
@@ -493,7 +492,7 @@ onMounted(() => {
           </div>
 
           <div v-else class="table-area fixed-list-shell">
-            <div v-loading="loading" class="license-card-list fixed-list-mobile" :style="{ maxHeight: `${mobileListHeight}px` }">
+            <div v-loading="loading" class="license-card-list fixed-list-mobile">
               <template v-if="paginatedItems.length">
                 <article v-for="item in paginatedItems" :key="item.license_key" class="license-card-mobile">
                   <div class="license-card-mobile__head">

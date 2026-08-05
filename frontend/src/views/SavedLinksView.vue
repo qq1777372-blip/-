@@ -86,7 +86,7 @@ const pushForm = reactive({
 
 let objectPreviewUrls: string[] = []
 
-const canPost = computed(() => Boolean(authStore.currentUser))
+const canPost = computed(() => authStore.canWrite('links'))
 const detectedFormUrls = computed(() => extractUrlsFromText(form.description))
 
 function getLinkActivityTimestamp(link: SavedLink) {
@@ -246,7 +246,7 @@ function canManageLink(link: SavedLink) {
     return false
   }
 
-  return currentUser.role === 'superadmin' || currentUser.id === link.author_user_id
+  return authStore.canWrite('links') && (currentUser.role === 'superadmin' || currentUser.id === link.author_user_id)
 }
 
 function getAuthorName(link: SavedLink) {
@@ -2420,23 +2420,52 @@ onBeforeUnmount(releasePreviewUrls)
 
 @media (max-width: 768px) {
   .saved-links-topbar {
-    padding: 12px 16px 10px;
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .saved-links-tabs {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .saved-links-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .saved-links-tab {
+    flex: 0 0 auto;
+    padding: 7px 10px;
   }
 
   .saved-links-topbar__actions {
-    justify-content: flex-start;
+    width: 100%;
+    justify-content: stretch;
+    gap: 8px;
+  }
+
+  .saved-links-search {
+    width: auto;
   }
 
   .saved-links-subbar {
-    padding: 8px 16px 4px;
+    padding: 10px 14px 6px;
+  }
+
+  .saved-links-subbar__status {
+    display: none;
   }
 
   .saved-link-feed {
     padding: 0;
+    justify-items: stretch;
   }
 
   .saved-link-feed-shell {
-    padding: 0 16px 16px;
+    padding: 0 14px 14px;
   }
 
   .saved-link-editor-gallery {
@@ -2454,8 +2483,31 @@ onBeforeUnmount(releasePreviewUrls)
     overflow: visible;
   }
 
+  .saved-link-post,
+  .saved-link-post--article {
+    width: 100%;
+    padding: 14px 0;
+  }
+
   .saved-link-post__header {
-    flex-direction: column;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .saved-link-post__user {
+    flex: 1 1 auto;
+  }
+
+  .saved-link-post__author-row {
+    gap: 6px;
+  }
+
+  .saved-link-post__menu-button {
+    width: 32px;
+    height: 32px;
+    box-shadow: none;
   }
 
   .saved-link-post__body,
@@ -2464,7 +2516,20 @@ onBeforeUnmount(releasePreviewUrls)
   }
 
   .saved-link-post__title {
-    font-size: 18px;
+    font-size: 17px;
+    line-height: 1.45;
+    white-space: normal;
+  }
+
+  .saved-link-post__description {
+    font-size: 14px;
+    line-height: 1.65;
+    -webkit-line-clamp: 3;
+  }
+
+  .saved-link-post__url {
+    padding: 9px 10px;
+    border-radius: 6px;
   }
 
   .saved-article-card {
@@ -2481,15 +2546,33 @@ onBeforeUnmount(releasePreviewUrls)
 
   .saved-link-gallery,
   .saved-link-gallery--double {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    max-width: 100%;
   }
 
   .saved-link-gallery--single {
     grid-template-columns: minmax(0, 1fr);
+    max-width: 280px;
+  }
+
+  .saved-link-gallery__item {
+    border-radius: 6px;
   }
 
   .saved-link-post__footer {
-    align-items: flex-start;
+    align-items: center;
+    flex-wrap: nowrap;
+    margin-top: 8px;
+  }
+
+  .saved-link-post__actions {
+    flex-wrap: nowrap;
+    margin-left: auto;
+  }
+
+  .saved-link-post__actions :deep(.el-button) {
+    padding-inline: 6px;
   }
 }
 </style>

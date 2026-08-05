@@ -71,6 +71,7 @@ class PeerShop(Base):
     shop_name = Column(String(120), nullable=False, index=True)
     shop_url = Column(String(1000), nullable=True)
     remark = Column(Text, nullable=True)
+    extra_fields = Column(Text, nullable=False, default="{}")
     image_path = Column(String(255), nullable=True)
     image_name = Column(String(255), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -87,6 +88,7 @@ class AccountUsageRecord(Base):
     usage_notes = Column(Text, nullable=True)
     is_banned = Column(Boolean, nullable=False, default=False)
     banned_reason = Column(String(255), nullable=True)
+    extra_fields = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -98,6 +100,7 @@ class MobileDeviceRecord(Base):
     primary_card = Column(String(50), nullable=True)
     secondary_card = Column(String(50), nullable=True)
     remark = Column(Text, nullable=True)
+    extra_fields = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -186,6 +189,7 @@ class AdminUser(Base):
     display_name = Column(String(50), nullable=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), nullable=False, default="superadmin")
+    permissions_json = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     avatar_path = Column(String(255), nullable=True)
     avatar_name = Column(String(255), nullable=True)
@@ -195,6 +199,8 @@ class AdminUser(Base):
     software_activated_at = Column(DateTime, nullable=True)
     software_expire_at = Column(DateTime, nullable=True, index=True)
     software_last_validated_at = Column(DateTime, nullable=True)
+    totp_enabled = Column(Boolean, nullable=False, default=False)
+    totp_secret_encrypted = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
@@ -234,4 +240,126 @@ class AuditLog(Base):
     resource_type = Column(String(80), nullable=False, index=True)
     resource_id = Column(Integer, nullable=True, index=True)
     details_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class Warehouse(Base):
+    __tablename__ = "Warehouse"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), nullable=False, unique=True, index=True)
+    name = Column(String(100), nullable=False, index=True)
+    address = Column(String(255), nullable=True)
+    contact_name = Column(String(50), nullable=True)
+    contact_phone = Column(String(30), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    remark = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WarehouseProduct(Base):
+    __tablename__ = "WarehouseProduct"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sku = Column(String(100), nullable=False, unique=True, index=True)
+    name = Column(String(150), nullable=False, index=True)
+    barcode = Column(String(100), nullable=True, unique=True, index=True)
+    specification = Column(String(150), nullable=True)
+    unit = Column(String(20), nullable=False, default="件")
+    cost_price = Column(Float, nullable=False, default=0)
+    warning_quantity = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    remark = Column(Text, nullable=True)
+    image_path = Column(String(255), nullable=True)
+    image_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WarehouseStock(Base):
+    __tablename__ = "WarehouseStock"
+    __table_args__ = (
+        UniqueConstraint("warehouse_id", "product_id", name="uq_warehouse_stock_product"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    warehouse_id = Column(Integer, nullable=False, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=0)
+    locked_quantity = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WarehouseInboundOrder(Base):
+    __tablename__ = "WarehouseInboundOrder"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_no = Column(String(50), nullable=False, unique=True, index=True)
+    warehouse_id = Column(Integer, nullable=False, index=True)
+    source_type = Column(String(30), nullable=False, default="purchase", index=True)
+    supplier = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=False, default="completed", index=True)
+    remark = Column(Text, nullable=True)
+    operator_user_id = Column(Integer, nullable=True, index=True)
+    operator_username = Column(String(50), nullable=True)
+    completed_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class WarehouseInboundItem(Base):
+    __tablename__ = "WarehouseInboundItem"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, nullable=False, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    quantity = Column(Integer, nullable=False)
+
+
+class WarehouseOutboundOrder(Base):
+    __tablename__ = "WarehouseOutboundOrder"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_no = Column(String(50), nullable=False, unique=True, index=True)
+    warehouse_id = Column(Integer, nullable=False, index=True)
+    external_order_no = Column(String(100), nullable=True, index=True)
+    delivery_method = Column(String(20), nullable=False, default="shipping", index=True)
+    recipient_name = Column(String(50), nullable=True)
+    recipient_phone = Column(String(30), nullable=True)
+    recipient_address = Column(String(500), nullable=True)
+    carrier = Column(String(50), nullable=True, index=True)
+    tracking_no = Column(String(100), nullable=True, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    remark = Column(Text, nullable=True)
+    operator_user_id = Column(Integer, nullable=True, index=True)
+    operator_username = Column(String(50), nullable=True)
+    shipped_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WarehouseOutboundItem(Base):
+    __tablename__ = "WarehouseOutboundItem"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, nullable=False, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    quantity = Column(Integer, nullable=False)
+
+
+class WarehouseStockMovement(Base):
+    __tablename__ = "WarehouseStockMovement"
+
+    id = Column(Integer, primary_key=True, index=True)
+    warehouse_id = Column(Integer, nullable=False, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    movement_type = Column(String(20), nullable=False, index=True)
+    quantity_change = Column(Integer, nullable=False)
+    quantity_after = Column(Integer, nullable=False)
+    reference_type = Column(String(30), nullable=False, index=True)
+    reference_id = Column(Integer, nullable=False, index=True)
+    reference_no = Column(String(50), nullable=False, index=True)
+    operator_user_id = Column(Integer, nullable=True, index=True)
+    operator_username = Column(String(50), nullable=True)
+    remark = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)

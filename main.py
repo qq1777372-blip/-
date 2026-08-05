@@ -2,6 +2,7 @@
 import hmac
 import asyncio
 import base64
+import io
 import json
 import logging
 import math
@@ -21,6 +22,9 @@ from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
+import pyotp
+import qrcode
+from cryptography.fernet import Fernet, InvalidToken
 
 from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -65,6 +69,14 @@ from models import (
     TaskBookkeepingOwner,
     TaskBookkeepingRecord,
     TaskBookkeepingShop,
+    Warehouse,
+    WarehouseInboundItem,
+    WarehouseInboundOrder,
+    WarehouseOutboundItem,
+    WarehouseOutboundOrder,
+    WarehouseProduct,
+    WarehouseStock,
+    WarehouseStockMovement,
 )
 from schemas import (
     AccountUsageBatchStatusUpdateRequest,
@@ -75,6 +87,8 @@ from schemas import (
     AccountUsageRecordResponse,
     AccountUsageRecordUpdate,
     AdminUserCreateRequest,
+    AdminUserAccessUpdateRequest,
+    AdminUserPasswordResetRequest,
     AdminSessionResponse,
     AdminUserResponse,
     AdminUserStatusUpdateRequest,
@@ -85,6 +99,9 @@ from schemas import (
     BatchActionResponse,
     BatchDeleteRequest,
     DashboardStatsResponse,
+    SystemAlertListResponse,
+    SystemAlertStatusRequest,
+    SystemSettingsResponse,
     ServerStatusResponse,
     DingTalkProfitDeleteBatchRequest,
     DingTalkProfitDeleteBatchResponse,
@@ -103,6 +120,10 @@ from schemas import (
     LicenseRecordUpdate,
     LoginRequest,
     LoginCaptchaResponse,
+    TotpConfirmRequest,
+    TotpDisableRequest,
+    TotpSetupRequest,
+    TotpSetupResponse,
     MobileDeviceRecordCreate,
     MobileDeviceRecordResponse,
     MobileDeviceRecordUpdate,
@@ -134,6 +155,18 @@ from schemas import (
     TaskBookkeepingShopCreate,
     TaskBookkeepingShopResponse,
     TaskBookkeepingSummaryResponse,
+    WarehouseInboundOrderCreate,
+    WarehouseInboundOrderResponse,
+    WarehouseOutboundOrderCreate,
+    WarehouseOutboundOrderResponse,
+    WarehouseOutboundStatusUpdate,
+    WarehousePayload,
+    WarehouseProductPayload,
+    WarehouseProductResponse,
+    WarehouseResponse,
+    WarehouseStockMovementResponse,
+    WarehouseStockResponse,
+    WarehouseSummaryResponse,
 )
 
 
@@ -167,6 +200,7 @@ _rule_catalog_cache: dict[str, Any] = {
 LINK_UPLOAD_DIR = UPLOADS_DIR / "links"
 AVATAR_UPLOAD_DIR = UPLOADS_DIR / "avatars"
 PEER_SHOP_UPLOAD_DIR = UPLOADS_DIR / "peer-shops"
+WAREHOUSE_PRODUCT_UPLOAD_DIR = UPLOADS_DIR / "warehouse-products"
 BACKUPS_DIR = BASE_DIR / "backups"
 SESSION_COOKIE_NAME = "admin_session"
 SESSION_DURATION_DAYS = 7
@@ -174,7 +208,10 @@ SOFTWARE_TOKEN_DURATION_DAYS = 30
 SOFTWARE_AUTH_SCHEME = HTTPBearer(auto_error=False)
 MAX_FAILED_LOGIN_ATTEMPTS = 5
 LOGIN_LOCK_MINUTES = 15
+LOGIN_CAPTCHA_AFTER_FAILURES = 3
 FIELD_CONFIG_INITIALIZED_KEY = "field_config_initialized"
+SYSTEM_SETTINGS_KEY = "system:settings"
+SYSTEM_ALERT_ACK_KEY = "system:alert_acknowledged"
 INTERNAL_SYNC_TOKEN_HEADER = "X-Internal-Sync-Token"
 INTERNAL_RESERVED_FIELD_NAMES = {"id", "extra_fields", "record_data"}
 SAVED_LINK_URL_PATTERN = re.compile(r"https?://[^\s<]+", re.IGNORECASE)
@@ -185,6 +222,34 @@ ROLE_LEVELS = {
     "editor": 2,
     "superadmin": 3,
 }
+
+PERMISSION_MODULES = {
+    "dashboard",
+    "links",
+    "task_bookkeeping",
+    "dingtalk_profits",
+    "shop_records",
+    "peer_shops",
+    "licenses",
+    "account_usage",
+    "mobile_devices",
+    "warehouse",
+}
+PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+PERMISSION_PATH_PREFIXES = (
+    ("/warehouse", "warehouse"),
+    ("/account-usage-records", "account_usage"),
+    ("/task-bookkeeping", "task_bookkeeping"),
+    ("/dingtalk-profits", "dingtalk_profits"),
+    ("/license-records", "licenses"),
+    ("/mobile-devices", "mobile_devices"),
+    ("/peer-shops", "peer_shops"),
+    ("/shop-records", "shop_records"),
+    ("/custom-fields", "shop_records"),
+    ("/saved-links", "links"),
+    ("/global-search", "dashboard"),
+    ("/dashboard", "dashboard"),
+)
 
 
 class RulePageImportRequest(BaseModel):
@@ -632,6 +697,61 @@ def resolve_account_type(role: str) -> str:
     return "admin"
 
 
+def get_default_permissions(role: str) -> dict[str, str]:
+    if role == "superadmin":
+        return {module: "write" for module in sorted(PERMISSION_MODULES)}
+
+    default_level = "write" if role == "editor" else "read"
+    return {module: default_level for module in sorted(PERMISSION_MODULES)}
+
+
+def resolve_admin_permissions(user: AdminUser) -> dict[str, str]:
+    permissions = get_default_permissions(user.role)
+    if user.role == "superadmin" or not user.permissions_json:
+        return permissions
+
+    try:
+        stored_permissions = json.loads(user.permissions_json)
+    except (TypeError, ValueError):
+        return permissions
+
+    if not isinstance(stored_permissions, dict):
+        return permissions
+
+    for module, level in stored_permissions.items():
+        if module in PERMISSION_MODULES and level in PERMISSION_LEVELS:
+            permissions[module] = level
+    if permissions["dashboard"] == "none":
+        permissions["dashboard"] = "read"
+    return permissions
+
+
+def normalize_admin_permissions(role: str, permissions: dict[str, str] | None) -> str | None:
+    if role == "superadmin" or permissions is None:
+        return None
+
+    normalized = get_default_permissions(role)
+    for module, level in permissions.items():
+        if module in PERMISSION_MODULES and level in PERMISSION_LEVELS:
+            normalized[module] = level
+    if normalized["dashboard"] == "none":
+        normalized["dashboard"] = "read"
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+
+
+def serialize_admin_user(user: AdminUser) -> dict[str, Any]:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "role": user.role,
+        "is_active": user.is_active,
+        "permissions": resolve_admin_permissions(user),
+        "totp_enabled": bool(user.totp_enabled),
+        "created_at": user.created_at,
+    }
+
+
 def serialize_current_user(user: AdminUser) -> dict[str, Any]:
     return {
         "id": user.id,
@@ -642,6 +762,8 @@ def serialize_current_user(user: AdminUser) -> dict[str, Any]:
         "is_active": user.is_active,
         "avatar_url": build_admin_user_avatar_url(user),
         "avatar_name": user.avatar_name,
+        "permissions": resolve_admin_permissions(user),
+        "totp_enabled": bool(user.totp_enabled),
     }
 
 
@@ -739,7 +861,9 @@ def serialize_peer_shop(record: PeerShop) -> dict[str, Any]:
         "shop_name": record.shop_name,
         "shop_url": record.shop_url,
         "remark": record.remark,
+        "extra_fields": parse_json_object(record.extra_fields),
         "created_at": record.created_at,
+        "extra_fields": parse_json_object(record.extra_fields),
         "image_name": record.image_name,
         "image_url": build_peer_shop_image_url(record),
     }
@@ -797,6 +921,7 @@ def serialize_mobile_device_record(record: MobileDeviceRecord) -> dict[str, Any]
         "primary_card": record.primary_card,
         "secondary_card": record.secondary_card,
         "remark": record.remark,
+        "extra_fields": parse_json_object(record.extra_fields),
         "created_at": record.created_at,
     }
 
@@ -1529,6 +1654,46 @@ def migrate_database() -> None:
 
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
+    if "WarehouseProduct" in table_names:
+        product_columns = {column["name"] for column in inspector.get_columns("WarehouseProduct")}
+        with engine.begin() as connection:
+            if "cost_price" not in product_columns:
+                connection.execute(
+                    text("ALTER TABLE WarehouseProduct ADD COLUMN cost_price REAL NOT NULL DEFAULT 0"),
+                )
+            if "image_path" not in product_columns:
+                connection.execute(
+                    text("ALTER TABLE WarehouseProduct ADD COLUMN image_path VARCHAR(255)"),
+                )
+            if "image_name" not in product_columns:
+                connection.execute(
+                    text("ALTER TABLE WarehouseProduct ADD COLUMN image_name VARCHAR(255)"),
+                )
+
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "WarehouseOutboundOrder" in table_names:
+        outbound_columns = {column["name"] for column in inspector.get_columns("WarehouseOutboundOrder")}
+        if "delivery_method" not in outbound_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE WarehouseOutboundOrder ADD COLUMN delivery_method VARCHAR(20) NOT NULL DEFAULT 'shipping'"),
+                )
+
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    for table_name in ("PeerShop", "AccountUsageRecord", "MobileDeviceRecord"):
+        if table_name not in table_names:
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table_name)}
+        if "extra_fields" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN extra_fields TEXT NOT NULL DEFAULT '{{}}'")
+                )
+
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
     if "SavedLink" in table_names:
         saved_link_columns = {column["name"] for column in inspector.get_columns("SavedLink")}
         with engine.begin() as connection:
@@ -1597,7 +1762,6 @@ def migrate_database() -> None:
                 connection.execute(
                     text("ALTER TABLE AdminSession ADD COLUMN user_agent VARCHAR(255) NOT NULL DEFAULT 'unknown'"),
                 )
-
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
     if "AdminUser" in table_names:
@@ -1606,6 +1770,10 @@ def migrate_database() -> None:
             if "display_name" not in admin_user_columns:
                 connection.execute(
                     text("ALTER TABLE AdminUser ADD COLUMN display_name VARCHAR(50)"),
+                )
+            if "permissions_json" not in admin_user_columns:
+                connection.execute(
+                    text("ALTER TABLE AdminUser ADD COLUMN permissions_json TEXT"),
                 )
             if "avatar_path" not in admin_user_columns:
                 connection.execute(
@@ -1638,6 +1806,14 @@ def migrate_database() -> None:
             if "software_last_validated_at" not in admin_user_columns:
                 connection.execute(
                     text("ALTER TABLE AdminUser ADD COLUMN software_last_validated_at DATETIME"),
+                )
+            if "totp_enabled" not in admin_user_columns:
+                connection.execute(
+                    text("ALTER TABLE AdminUser ADD COLUMN totp_enabled BOOLEAN NOT NULL DEFAULT 0"),
+                )
+            if "totp_secret_encrypted" not in admin_user_columns:
+                connection.execute(
+                    text("ALTER TABLE AdminUser ADD COLUMN totp_secret_encrypted TEXT"),
                 )
 
 
@@ -1687,6 +1863,46 @@ def has_admin_users(db: Session) -> bool:
 
 def get_setting(db: Session, key: str) -> AppSetting | None:
     return db.get(AppSetting, key)
+
+
+DEFAULT_SYSTEM_SETTINGS: dict[str, Any] = {
+    "license_expiry_days": 30,
+    "stale_task_days": 3,
+    "login_failure_threshold": 3,
+    "session_duration_hours": 168,
+    "low_stock_alert_enabled": True,
+    "pending_outbound_alert_enabled": True,
+    "task_alert_enabled": True,
+    "security_alert_enabled": True,
+}
+
+
+def read_json_setting(db: Session, key: str, default: Any) -> Any:
+    setting = get_setting(db, key)
+    if setting is None:
+        return default
+    try:
+        value = json.loads(setting.value)
+    except (TypeError, ValueError):
+        return default
+    return value
+
+
+def write_json_setting(db: Session, key: str, value: Any) -> None:
+    serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    setting = get_setting(db, key)
+    if setting is None:
+        db.add(AppSetting(key=key, value=serialized))
+    else:
+        setting.value = serialized
+
+
+def get_system_settings(db: Session) -> dict[str, Any]:
+    stored = read_json_setting(db, SYSTEM_SETTINGS_KEY, {})
+    merged = dict(DEFAULT_SYSTEM_SETTINGS)
+    if isinstance(stored, dict):
+        merged.update({key: stored[key] for key in DEFAULT_SYSTEM_SETTINGS if key in stored})
+    return SystemSettingsResponse.model_validate(merged).model_dump()
 
 
 def initialize_field_configuration() -> None:
@@ -1781,6 +1997,40 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
     actual_digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return hmac.compare_digest(actual_digest, expected_digest)
+
+
+def get_auth_fernet() -> Fernet:
+    key_material = hashlib.sha256(settings.auth_encryption_key.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(key_material))
+
+
+def encrypt_totp_secret(secret: str) -> str:
+    return get_auth_fernet().encrypt(secret.encode("ascii")).decode("ascii")
+
+
+def decrypt_totp_secret(encrypted_secret: str | None) -> str:
+    if not encrypted_secret:
+        raise HTTPException(status_code=409, detail="二次验证配置无效，请重新设置")
+    try:
+        return get_auth_fernet().decrypt(encrypted_secret.encode("ascii")).decode("ascii")
+    except (InvalidToken, ValueError):
+        raise HTTPException(status_code=409, detail="二次验证配置无法解密，请联系管理员") from None
+
+
+def normalize_totp_code(code: str | None) -> str:
+    return re.sub(r"\D", "", str(code or ""))
+
+
+def verify_totp_code(secret: str, code: str | None) -> bool:
+    normalized = normalize_totp_code(code)
+    return len(normalized) == 6 and pyotp.TOTP(secret).verify(normalized, valid_window=1)
+
+
+def build_totp_qr_data(provisioning_uri: str) -> str:
+    image = qrcode.make(provisioning_uri)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def hash_session_token(token: str) -> str:
@@ -1946,6 +2196,15 @@ def get_login_attempt(db: Session, username: str, ip_address: str) -> LoginAttem
     )
 
 
+def is_login_captcha_required(db: Session, username: str, ip_address: str) -> bool:
+    attempt = get_login_attempt(db, username, ip_address)
+    if attempt is None:
+        return False
+    if attempt.locked_until is not None and attempt.locked_until <= datetime.utcnow():
+        return False
+    return attempt.failed_count >= LOGIN_CAPTCHA_AFTER_FAILURES
+
+
 def ensure_login_not_locked(db: Session, username: str, ip_address: str) -> None:
     attempt = get_login_attempt(db, username, ip_address)
     if attempt is None:
@@ -2010,7 +2269,6 @@ def clear_user_sessions(db: Session, user_id: int, *, exclude_session_id: int | 
         db.delete(session)
     commit_session(db, default_detail="Failed to clear user sessions")
     return len(sessions)
-
 
 
 def create_software_session(
@@ -4297,6 +4555,8 @@ def load_category_rule_payload(platform: str, category_id: str, *, include_snaps
 
 
 AUTO_RULE_PACKAGE_PATCH_BOOL_KEYS = {
+    "forceSingleSizeMapping",
+    "useHeightWeightChestSizeMapping",
     "requireVerticalGuideImage",
     "requireMultiDiscountPromotion",
     "requireSkuCombineContent",
@@ -4304,15 +4564,26 @@ AUTO_RULE_PACKAGE_PATCH_BOOL_KEYS = {
     "requireBarcode",
 }
 
+AUTO_RULE_PACKAGE_PATCH_STRING_LIMITS = {
+    "sizeTextNormalizeMode": 120,
+    "freeSizeSubmitText": 40,
+    "sizeMappingTemplateId": 64,
+    "sizeMappingFields": 4000,
+}
 
-def normalize_auto_rule_package_patch(raw_patch: dict[str, Any]) -> dict[str, bool]:
+
+def normalize_auto_rule_package_patch(raw_patch: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_patch, dict):
         return {}
 
-    normalized: dict[str, bool] = {}
+    normalized: dict[str, Any] = {}
     for key in sorted(AUTO_RULE_PACKAGE_PATCH_BOOL_KEYS):
         if get_rule_bool(raw_patch.get(key)):
             normalized[key] = True
+    for key, limit in AUTO_RULE_PACKAGE_PATCH_STRING_LIMITS.items():
+        value = str(raw_patch.get(key) or "").strip()
+        if value:
+            normalized[key] = value[:limit]
     return normalized
 
 
@@ -5238,7 +5509,8 @@ def create_session_cookie(
     *,
     request: Request | None = None,
 ) -> AdminSession:
-    expires_at = datetime.utcnow() + timedelta(days=SESSION_DURATION_DAYS)
+    duration_hours = int(get_system_settings(db)["session_duration_hours"])
+    expires_at = datetime.utcnow() + timedelta(hours=duration_hours)
     raw_token = secrets.token_urlsafe(32)
     admin_session = AdminSession(
         user_id=user.id,
@@ -5255,7 +5527,7 @@ def create_session_cookie(
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=raw_token,
-        max_age=SESSION_DURATION_DAYS * 24 * 60 * 60,
+        max_age=duration_hours * 60 * 60,
         httponly=True,
         samesite=settings.session_cookie_samesite,
         secure=settings.session_cookie_secure,
@@ -5371,10 +5643,27 @@ def get_current_publish_failure_report_reader(
 
 
 def get_current_user(
+    request: Request,
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     db: Session = Depends(get_db),
 ) -> AdminUser:
-    return resolve_current_user(session_token, db, required=True)
+    user = resolve_current_user(session_token, db, required=True)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if user.role != "superadmin":
+        permission_module = next(
+            (module for prefix, module in PERMISSION_PATH_PREFIXES if request.url.path.startswith(prefix)),
+            None,
+        )
+        if permission_module:
+            permissions = resolve_admin_permissions(user)
+            actual_level = PERMISSION_LEVELS.get(permissions.get(permission_module, "none"), 0)
+            required_level = 1 if request.method in {"GET", "HEAD", "OPTIONS"} else 2
+            if actual_level < required_level:
+                raise HTTPException(status_code=403, detail="当前账号没有此模块的操作权限")
+
+    return user
 
 
 def get_current_user_optional(
@@ -5410,9 +5699,16 @@ def require_internal_sync_token(
 
 
 def require_role(min_role: str) -> Callable[[AdminUser], AdminUser]:
-    def dependency(current_user: AdminUser = Depends(get_current_user)) -> AdminUser:
+    def dependency(request: Request, current_user: AdminUser = Depends(get_current_user)) -> AdminUser:
         current_level = ROLE_LEVELS.get(current_user.role, 0)
         required_level = ROLE_LEVELS[min_role]
+        if min_role == "editor":
+            permission_module = next(
+                (module for prefix, module in PERMISSION_PATH_PREFIXES if request.url.path.startswith(prefix)),
+                None,
+            )
+            if permission_module and resolve_admin_permissions(current_user).get(permission_module) == "write":
+                return current_user
         if current_level < required_level:
             raise HTTPException(status_code=403, detail="Permission denied")
         return current_user
@@ -5426,6 +5722,7 @@ async def lifespan(_: FastAPI):
     LINK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     AVATAR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     PEER_SHOP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    WAREHOUSE_PRODUCT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_product_parse_cache_db()
     ensure_publish_failure_report_db()
@@ -5743,7 +6040,6 @@ def login(
     db: Session = Depends(get_db),
 ):
     ip_address = get_client_ip(request)
-    consume_login_captcha(payload.captcha_id, payload.captcha_code)
     try:
         ensure_login_not_locked(db, payload.username, ip_address)
     except HTTPException:
@@ -5763,6 +6059,15 @@ def login(
         commit_session(db, default_detail="Failed to record audit log")
         raise
 
+    if is_login_captcha_required(db, payload.username, ip_address):
+        if not payload.captcha_id or not payload.captcha_code:
+            raise HTTPException(
+                status_code=428,
+                detail="登录失败次数较多，请输入验证码",
+                headers={"X-Captcha-Required": "true"},
+            )
+        consume_login_captcha(payload.captcha_id, payload.captcha_code)
+
     db_user = db.scalar(select(AdminUser).where(AdminUser.username == payload.username))
     if db_user is None or not verify_password(payload.password, db_user.password_hash):
         record_login_failure(db, payload.username, ip_address)
@@ -5781,7 +6086,12 @@ def login(
             ),
         )
         commit_session(db, default_detail="Failed to record audit log")
-        raise HTTPException(status_code=401, detail="鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒")
+        captcha_required = bool(attempt and attempt.failed_count >= LOGIN_CAPTCHA_AFTER_FAILURES)
+        raise HTTPException(
+            status_code=401,
+            detail="用户名或密码错误",
+            headers={"X-Captcha-Required": "true"} if captcha_required else None,
+        )
     if not db_user.is_active:
         write_audit_log(
             db,
@@ -5806,6 +6116,30 @@ def login(
         commit_session(db, default_detail="Failed to record audit log")
         raise HTTPException(status_code=403, detail="软件账号只能登录客户端，不能进入后台")
 
+    if db_user.totp_enabled:
+        if not payload.totp_code:
+            raise HTTPException(
+                status_code=428,
+                detail="请输入身份验证器中的6位动态验证码",
+                headers={"X-TOTP-Required": "true"},
+            )
+        if not verify_totp_code(decrypt_totp_secret(db_user.totp_secret_encrypted), payload.totp_code):
+            record_login_failure(db, payload.username, ip_address)
+            write_audit_log(
+                db,
+                actor=db_user,
+                action="login_totp_failed",
+                resource_type="auth_session",
+                resource_id=db_user.id,
+                details=build_auth_audit_details(request),
+            )
+            commit_session(db, default_detail="Failed to record TOTP login failure")
+            raise HTTPException(
+                status_code=401,
+                detail="动态验证码错误或已过期",
+                headers={"X-TOTP-Required": "true"},
+            )
+
     clear_login_failures(db, payload.username, ip_address)
     revoked_session_count = clear_user_sessions(db, db_user.id)
     admin_session = create_session_cookie(db_user, response, db, request=request)
@@ -5824,6 +6158,64 @@ def login(
     )
     commit_session(db, default_detail="Failed to record audit log")
     return serialize_current_user(db_user)
+
+
+@app.post("/auth/totp/setup", response_model=TotpSetupResponse, summary="Start authenticator setup")
+def setup_totp(
+    payload: TotpSetupRequest,
+    current_user: AdminUser = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="当前密码错误")
+    secret = pyotp.random_base32()
+    provisioning_uri = pyotp.TOTP(secret).provisioning_uri(
+        name=current_user.username,
+        issuer_name="内部管理系统",
+    )
+    return {
+        "secret": secret,
+        "provisioning_uri": provisioning_uri,
+        "qr_image_data": build_totp_qr_data(provisioning_uri),
+    }
+
+
+@app.post("/auth/totp/confirm", response_model=CurrentUserResponse, summary="Enable authenticator")
+def confirm_totp(
+    payload: TotpConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(get_current_user),
+):
+    secret = payload.secret.strip().replace(" ", "").upper()
+    if not verify_totp_code(secret, payload.code):
+        raise HTTPException(status_code=400, detail="动态验证码错误，请确认手机时间准确后重试")
+    current_user.totp_secret_encrypted = encrypt_totp_secret(secret)
+    current_user.totp_enabled = True
+    write_audit_log(
+        db, actor=current_user, action="totp_enabled", resource_type="admin_user", resource_id=current_user.id,
+    )
+    commit_session(db, default_detail="Failed to enable TOTP")
+    return serialize_current_user(current_user)
+
+
+@app.post("/auth/totp/disable", response_model=CurrentUserResponse, summary="Disable authenticator")
+def disable_totp(
+    payload: TotpDisableRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(get_current_user),
+):
+    if not current_user.totp_enabled:
+        return serialize_current_user(current_user)
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="当前密码错误")
+    if not verify_totp_code(decrypt_totp_secret(current_user.totp_secret_encrypted), payload.code):
+        raise HTTPException(status_code=400, detail="动态验证码错误或已过期")
+    current_user.totp_enabled = False
+    current_user.totp_secret_encrypted = None
+    write_audit_log(
+        db, actor=current_user, action="totp_disabled", resource_type="admin_user", resource_id=current_user.id,
+    )
+    commit_session(db, default_detail="Failed to disable TOTP")
+    return serialize_current_user(current_user)
 
 
 @app.post(
@@ -5897,13 +6289,8 @@ def software_register(
     )
     db.refresh(db_user)
     token, session = create_software_session(
-        db_user,
-        db,
-        request=request,
-        device_id=payload.device_id,
-        device_name=payload.device_name,
-        platform=payload.platform,
-        app_version=payload.app_version,
+        db_user, db, request=request, device_id=payload.device_id, device_name=payload.device_name,
+        platform=payload.platform, app_version=payload.app_version,
     )
     write_audit_log(
         db,
@@ -5958,13 +6345,8 @@ def software_login(
 
     clear_login_failures(db, payload.username, ip_address)
     token, session = create_software_session(
-        db_user,
-        db,
-        request=request,
-        device_id=payload.device_id,
-        device_name=payload.device_name,
-        platform=payload.platform,
-        app_version=payload.app_version,
+        db_user, db, request=request, device_id=payload.device_id, device_name=payload.device_name,
+        platform=payload.platform, app_version=payload.app_version,
     )
     write_audit_log(
         db,
@@ -6675,7 +7057,9 @@ def dashboard_stats(
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("viewer")),
 ):
-    cached_payload = cache_get_json("dashboard:stats")
+    system_config = get_system_settings(db)
+    dashboard_cache_key = f"dashboard:stats:{system_config['license_expiry_days']}"
+    cached_payload = cache_get_json(dashboard_cache_key)
     if isinstance(cached_payload, dict):
         return cached_payload
 
@@ -6689,7 +7073,7 @@ def dashboard_stats(
     ) or 0
     revenue_total = db.scalar(select(func.coalesce(func.sum(ShopRecord.daily_revenue), 0.0))) or 0.0
     today = date_type.today()
-    expiring_deadline = today + timedelta(days=30)
+    expiring_deadline = today + timedelta(days=int(system_config["license_expiry_days"]))
     expired_license_count = db.scalar(
         select(func.count(LicenseRecord.id)).where(
             LicenseRecord.expiry_date.is_not(None),
@@ -6771,8 +7155,190 @@ def dashboard_stats(
         ],
     }
 
-    cache_set_json("dashboard:stats", payload, ttl_seconds=60)
+    cache_set_json(dashboard_cache_key, payload, ttl_seconds=60)
     return payload
+
+
+def build_system_alerts(db: Session) -> list[dict[str, Any]]:
+    config = get_system_settings(db)
+    acknowledgements = read_json_setting(db, SYSTEM_ALERT_ACK_KEY, {})
+    if not isinstance(acknowledgements, dict):
+        acknowledgements = {}
+    alerts: list[dict[str, Any]] = []
+
+    def add_alert(
+        key: str,
+        category: str,
+        severity: str,
+        title: str,
+        description: str,
+        route: str,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        ack = acknowledgements.get(key) if isinstance(acknowledgements.get(key), dict) else {}
+        acknowledged_at = None
+        if ack.get("at"):
+            try:
+                acknowledged_at = datetime.fromisoformat(str(ack["at"]))
+            except ValueError:
+                acknowledged_at = None
+        alerts.append({
+            "key": key, "category": category, "severity": severity, "title": title,
+            "description": description, "route": route, "occurred_at": occurred_at,
+            "acknowledged": bool(ack), "acknowledged_at": acknowledged_at,
+            "acknowledged_by": ack.get("by") if ack else None,
+        })
+
+    if config["low_stock_alert_enabled"]:
+        products = {item.id: item for item in db.scalars(select(WarehouseProduct).where(WarehouseProduct.is_active.is_(True))).all()}
+        warehouses = {item.id: item for item in db.scalars(select(Warehouse)).all()}
+        for stock in db.scalars(select(WarehouseStock)).all():
+            product = products.get(stock.product_id)
+            if product is None:
+                continue
+            available = stock.quantity - stock.locked_quantity
+            if available <= product.warning_quantity:
+                warehouse_name = warehouses.get(stock.warehouse_id).name if warehouses.get(stock.warehouse_id) else "未知仓库"
+                add_alert(
+                    f"inventory:{stock.warehouse_id}:{stock.product_id}", "inventory",
+                    "critical" if available <= 0 else "warning", f"{product.name} 库存不足",
+                    f"{warehouse_name} / SKU {product.sku}，可用 {available} {product.unit}，预警值 {product.warning_quantity}。",
+                    "/warehouse/stock", stock.updated_at,
+                )
+
+    if config["pending_outbound_alert_enabled"]:
+        pending_orders = db.scalars(
+            select(WarehouseOutboundOrder).where(
+                WarehouseOutboundOrder.status.not_in(["shipped", "cancelled"]),
+            ).order_by(WarehouseOutboundOrder.created_at.asc()),
+        ).all()
+        for order in pending_orders:
+            age_hours = max(0, int((datetime.utcnow() - order.created_at).total_seconds() // 3600))
+            add_alert(
+                f"outbound:{order.id}", "outbound", "critical" if age_hours >= 24 else "warning",
+                f"出库单 {order.order_no} 待处理", f"当前状态 {order.status}，已等待约 {age_hours} 小时。",
+                "/warehouse/outbound", order.created_at,
+            )
+
+    today = date_type.today()
+    expiry_deadline = today + timedelta(days=int(config["license_expiry_days"]))
+    licenses = db.scalars(
+        select(LicenseRecord).where(
+            LicenseRecord.expiry_date.is_not(None), LicenseRecord.expiry_date <= expiry_deadline,
+        ).order_by(LicenseRecord.expiry_date.asc()),
+    ).all()
+    for record in licenses:
+        days_left = (record.expiry_date - today).days
+        add_alert(
+            f"license:{record.id}", "license", "critical" if days_left < 0 else "warning",
+            f"{record.subject_name} {'执照已过期' if days_left < 0 else '执照即将到期'}",
+            f"到期日期 {record.expiry_date.isoformat()}，{'已过期 ' + str(abs(days_left)) + ' 天' if days_left < 0 else '剩余 ' + str(days_left) + ' 天'}。",
+            "/licenses", datetime.combine(record.expiry_date, datetime.min.time()),
+        )
+
+    if config["task_alert_enabled"]:
+        cutoff = datetime.utcnow() - timedelta(days=int(config["stale_task_days"]))
+        tasks = db.scalars(
+            select(TaskBookkeepingRecord).where(
+                TaskBookkeepingRecord.task_time <= cutoff,
+                (TaskBookkeepingRecord.signed_status == "pending") | (TaskBookkeepingRecord.settlement_status == "pending"),
+            ).order_by(TaskBookkeepingRecord.task_time.asc()),
+        ).all()
+        for task in tasks:
+            pending_parts = []
+            if task.signed_status == "pending": pending_parts.append("待签收")
+            if task.settlement_status == "pending": pending_parts.append("待结算")
+            add_alert(
+                f"task:{task.id}", "task", "warning", f"{task.shop_name} 任务长时间未完成",
+                f"负责人 {task.owner_name}，{'、'.join(pending_parts)}，任务时间 {task.task_time:%Y-%m-%d %H:%M}。",
+                "/task-bookkeeping/records", task.task_time,
+            )
+
+    if config["security_alert_enabled"]:
+        threshold = int(config["login_failure_threshold"])
+        attempts = db.scalars(
+            select(LoginAttempt).where(LoginAttempt.failed_count >= threshold).order_by(LoginAttempt.last_attempt_at.desc()),
+        ).all()
+        for attempt in attempts:
+            locked = bool(attempt.locked_until and attempt.locked_until > datetime.utcnow())
+            add_alert(
+                f"security:{attempt.id}", "security", "critical" if locked else "warning",
+                f"账号 {attempt.username} {'已被锁定' if locked else '连续登录失败'}",
+                f"来源 IP {attempt.ip_address}，累计失败 {attempt.failed_count} 次。",
+                "/audit-logs", attempt.last_attempt_at,
+            )
+
+    severity_order = {"critical": 0, "warning": 1, "info": 2}
+    alerts.sort(key=lambda item: (item["acknowledged"], severity_order[item["severity"]], item["occurred_at"] or datetime.min))
+    return alerts
+
+
+@app.get("/system-alerts", response_model=SystemAlertListResponse, summary="List current system alerts")
+def list_system_alerts(
+    category: str | None = None,
+    status_filter: str = "all",
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    all_items = build_system_alerts(db)
+    items = [item for item in all_items if not category or item["category"] == category]
+    if status_filter == "open": items = [item for item in items if not item["acknowledged"]]
+    if status_filter == "acknowledged": items = [item for item in items if item["acknowledged"]]
+    return {
+        "total": len(items),
+        "open_count": sum(not item["acknowledged"] for item in all_items),
+        "acknowledged_count": sum(item["acknowledged"] for item in all_items),
+        "critical_count": sum(not item["acknowledged"] and item["severity"] == "critical" for item in all_items),
+        "items": items,
+    }
+
+
+@app.patch("/system-alerts/{alert_key:path}", response_model=SystemAlertListResponse, summary="Acknowledge or reopen an alert")
+def update_system_alert_status(
+    alert_key: str,
+    payload: SystemAlertStatusRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    active_keys = {item["key"] for item in build_system_alerts(db)}
+    if alert_key not in active_keys:
+        raise HTTPException(status_code=404, detail="提醒已不存在或对应问题已经解决")
+    acknowledgements = read_json_setting(db, SYSTEM_ALERT_ACK_KEY, {})
+    if not isinstance(acknowledgements, dict): acknowledgements = {}
+    if payload.acknowledged:
+        acknowledgements[alert_key] = {"at": datetime.utcnow().isoformat(), "by": current_user.username}
+    else:
+        acknowledgements.pop(alert_key, None)
+    write_json_setting(db, SYSTEM_ALERT_ACK_KEY, acknowledgements)
+    write_audit_log(
+        db, actor=current_user, action="system_alert_acknowledged" if payload.acknowledged else "system_alert_reopened",
+        resource_type="system_alert", details={"alert_key": alert_key},
+    )
+    commit_session(db, default_detail="Failed to update system alert")
+    return list_system_alerts(db=db, _=current_user)
+
+
+@app.get("/system-settings", response_model=SystemSettingsResponse, summary="Read system settings")
+def read_system_settings(
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("superadmin")),
+):
+    return get_system_settings(db)
+
+
+@app.put("/system-settings", response_model=SystemSettingsResponse, summary="Update system settings")
+def update_system_settings(
+    payload: SystemSettingsResponse,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("superadmin")),
+):
+    value = payload.model_dump()
+    write_json_setting(db, SYSTEM_SETTINGS_KEY, value)
+    write_audit_log(
+        db, actor=current_user, action="system_settings_updated", resource_type="system_settings", details=value,
+    )
+    commit_session(db, default_detail="Failed to update system settings")
+    return value
 
 
 @app.post(
@@ -6940,7 +7506,7 @@ def list_admin_users(
         .where(AdminUser.role != "software")
         .order_by(AdminUser.created_at.desc(), AdminUser.id.desc())
     )
-    return db.scalars(stmt).all()
+    return [serialize_admin_user(user) for user in db.scalars(stmt).all()]
 
 
 @app.post(
@@ -6962,6 +7528,7 @@ def create_admin_user(
         username=payload.username,
         password_hash=hash_password(payload.password),
         role=payload.role,
+        permissions_json=normalize_admin_permissions(payload.role, payload.permissions),
         is_active=True,
     )
     db.add(db_user)
@@ -6971,7 +7538,56 @@ def create_admin_user(
         integrity_detail="账号已存在",
     )
     db.refresh(db_user)
-    return db_user
+    return serialize_admin_user(db_user)
+
+
+@app.patch(
+    "/admin-users/{user_id}",
+    response_model=AdminUserResponse,
+    summary="Update admin role and module permissions",
+)
+def update_admin_user_access(
+    user_id: int,
+    payload: AdminUserAccessUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("superadmin")),
+):
+    db_user = get_admin_user_or_404(db, user_id)
+
+    if db_user.id == current_user.id and payload.role != "superadmin":
+        raise HTTPException(status_code=400, detail="不能降低当前登录账号的超级管理员角色")
+
+    if db_user.role == "superadmin" and payload.role != "superadmin":
+        superadmin_count = db.scalar(
+            select(func.count(AdminUser.id)).where(AdminUser.role == "superadmin"),
+        ) or 0
+        if superadmin_count <= 1:
+            raise HTTPException(status_code=400, detail="至少保留一个超级管理员")
+
+    previous_role = db_user.role
+    previous_permissions = resolve_admin_permissions(db_user)
+    db_user.role = payload.role
+    db_user.permissions_json = normalize_admin_permissions(payload.role, payload.permissions)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="admin_access_updated",
+        resource_type="admin_user",
+        resource_id=db_user.id,
+        details={
+            "target_username": db_user.username,
+            "previous_role": previous_role,
+            "role": payload.role,
+            "previous_permissions": previous_permissions,
+            "permissions": resolve_admin_permissions(db_user),
+        },
+    )
+    commit_session(db, default_detail="Failed to update admin access")
+
+    if db_user.id != current_user.id:
+        clear_user_sessions(db, db_user.id)
+    db.refresh(db_user)
+    return serialize_admin_user(db_user)
 
 
 @app.patch(
@@ -7018,7 +7634,36 @@ def update_admin_user_status(
         clear_user_sessions(db, db_user.id)
 
     db.refresh(db_user)
-    return db_user
+    return serialize_admin_user(db_user)
+
+
+@app.patch(
+    "/admin-users/{user_id}/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Reset an admin user's password",
+)
+def reset_admin_user_password(
+    user_id: int,
+    payload: AdminUserPasswordResetRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("superadmin")),
+):
+    db_user = get_admin_user_or_404(db, user_id)
+    if db_user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="请通过个人菜单中的修改密码功能修改当前账号密码")
+
+    db_user.password_hash = hash_password(payload.new_password)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="admin_password_reset",
+        resource_type="admin_user",
+        resource_id=db_user.id,
+        details={"target_username": db_user.username},
+    )
+    commit_session(db, default_detail="Failed to reset admin password")
+    clear_user_sessions(db, db_user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 UI_TABLE_SETTING_KEYS = {
@@ -8148,6 +8793,7 @@ def create_account_usage_record(
     _: AdminUser = Depends(require_role("editor")),
 ):
     values = payload.model_dump()
+    values["extra_fields"] = dump_json_object(values.get("extra_fields") or {})
     values["account_name"] = encrypt_account_usage_secret(values.get("account_name")) or ""
     values["password"] = encrypt_account_password(values.get("password"))
     db_record = AccountUsageRecord(**values)
@@ -8221,6 +8867,8 @@ def update_account_usage_record(
             value = encrypt_account_usage_secret(value) or db_record.account_name
         if key == "password":
             value = encrypt_account_password(value)
+        if key == "extra_fields":
+            value = dump_json_object(value or {})
         setattr(db_record, key, value)
 
     commit_session(db, default_detail="Failed to update account usage record")
@@ -8333,7 +8981,9 @@ def create_mobile_device_record(
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("editor")),
 ):
-    db_record = MobileDeviceRecord(**payload.model_dump())
+    values = payload.model_dump()
+    values["extra_fields"] = dump_json_object(values.get("extra_fields") or {})
+    db_record = MobileDeviceRecord(**values)
     db.add(db_record)
     commit_session(db, default_detail="Failed to create mobile device record")
     db.refresh(db_record)
@@ -8380,6 +9030,8 @@ def update_mobile_device_record(
 ):
     db_record = get_mobile_device_record_or_404(db, record_id)
     for key, value in payload.model_dump().items():
+        if key == "extra_fields":
+            value = dump_json_object(value or {})
         setattr(db_record, key, value)
 
     commit_session(db, default_detail="Failed to update mobile device record")
@@ -8747,7 +9399,9 @@ def create_peer_shop(
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("editor")),
 ):
-    db_record = PeerShop(**payload.model_dump())
+    values = payload.model_dump()
+    values["extra_fields"] = dump_json_object(values.get("extra_fields") or {})
+    db_record = PeerShop(**values)
     db.add(db_record)
     commit_session(db, default_detail="Failed to create peer shop")
     db.refresh(db_record)
@@ -8825,6 +9479,8 @@ def update_peer_shop(
 ):
     db_record = get_peer_shop_or_404(db, record_id)
     for key, value in payload.model_dump().items():
+        if key == "extra_fields":
+            value = dump_json_object(value or {})
         setattr(db_record, key, value)
 
     commit_session(db, default_detail="Failed to update peer shop")
@@ -8932,3 +9588,656 @@ def delete_peer_shop_image(
     commit_session(db, default_detail="Failed to delete peer-shop image")
     db.refresh(db_record)
     return serialize_peer_shop(db_record)
+
+
+def normalize_warehouse_text(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def generate_warehouse_order_no(prefix: str) -> str:
+    return f"{prefix}{datetime.now(TASK_BOOKKEEPING_TIMEZONE):%Y%m%d%H%M%S}{secrets.randbelow(10000):04d}"
+
+
+def get_warehouse_or_404(db: Session, warehouse_id: int) -> Warehouse:
+    record = db.get(Warehouse, warehouse_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="仓库不存在")
+    return record
+
+
+def get_warehouse_product_or_404(db: Session, product_id: int) -> WarehouseProduct:
+    record = db.get(WarehouseProduct, product_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    return record
+
+
+def build_warehouse_product_image_url(record: WarehouseProduct) -> str | None:
+    if not record.image_path:
+        return None
+    return f"/warehouse/products/{record.id}/image-file?v={Path(record.image_path).name}"
+
+
+def serialize_warehouse_product(record: WarehouseProduct) -> dict[str, Any]:
+    return {
+        "id": record.id, "sku": record.sku, "name": record.name, "barcode": record.barcode,
+        "specification": record.specification, "unit": record.unit,
+        "cost_price": float(record.cost_price or 0), "warning_quantity": record.warning_quantity,
+        "is_active": record.is_active, "remark": record.remark,
+        "image_url": build_warehouse_product_image_url(record), "image_name": record.image_name,
+        "created_at": record.created_at, "updated_at": record.updated_at,
+    }
+
+
+def delete_warehouse_product_image_file(record: WarehouseProduct) -> None:
+    if record.image_path:
+        image_file = UPLOADS_DIR / record.image_path
+        if image_file.exists():
+            image_file.unlink()
+
+
+async def save_warehouse_product_image(record: WarehouseProduct, upload: UploadFile) -> None:
+    if not upload.filename:
+        raise HTTPException(status_code=400, detail="请选择商品图片")
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise HTTPException(status_code=400, detail="仅支持 JPG、PNG、WebP 图片")
+    if upload.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=400, detail="图片 MIME 类型无效")
+    content = await upload.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="图片文件为空")
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 15MB")
+    delete_warehouse_product_image_file(record)
+    filename = f"product_{record.id}_{secrets.token_hex(8)}{suffix}"
+    (WAREHOUSE_PRODUCT_UPLOAD_DIR / filename).write_bytes(content)
+    record.image_path = f"warehouse-products/{filename}"
+    record.image_name = upload.filename
+
+
+def merge_warehouse_order_lines(items: list[Any]) -> dict[int, int]:
+    merged: dict[int, int] = {}
+    for item in items:
+        merged[item.product_id] = merged.get(item.product_id, 0) + item.quantity
+    return merged
+
+
+def serialize_warehouse_order_items(
+    db: Session,
+    item_model: type[WarehouseInboundItem] | type[WarehouseOutboundItem],
+    order_id: int,
+) -> list[dict[str, Any]]:
+    items = db.scalars(select(item_model).where(item_model.order_id == order_id).order_by(item_model.id)).all()
+    products = {
+        product.id: product
+        for product in db.scalars(
+            select(WarehouseProduct).where(WarehouseProduct.id.in_([item.product_id for item in items]))
+        ).all()
+    } if items else {}
+    return [
+        {
+            "product_id": item.product_id,
+            "sku": products[item.product_id].sku,
+            "product_name": products[item.product_id].name,
+            "specification": products[item.product_id].specification,
+            "unit": products[item.product_id].unit,
+            "image_url": build_warehouse_product_image_url(products[item.product_id]),
+            "quantity": item.quantity,
+        }
+        for item in items
+        if item.product_id in products
+    ]
+
+
+def serialize_warehouse_inbound_order(db: Session, record: WarehouseInboundOrder) -> dict[str, Any]:
+    warehouse = get_warehouse_or_404(db, record.warehouse_id)
+    return {
+        "id": record.id,
+        "order_no": record.order_no,
+        "warehouse_id": record.warehouse_id,
+        "warehouse_name": warehouse.name,
+        "source_type": record.source_type,
+        "supplier": record.supplier,
+        "status": record.status,
+        "remark": record.remark,
+        "operator_username": record.operator_username,
+        "completed_at": record.completed_at,
+        "created_at": record.created_at,
+        "items": serialize_warehouse_order_items(db, WarehouseInboundItem, record.id),
+    }
+
+
+def serialize_warehouse_outbound_order(db: Session, record: WarehouseOutboundOrder) -> dict[str, Any]:
+    warehouse = get_warehouse_or_404(db, record.warehouse_id)
+    return {
+        "id": record.id,
+        "order_no": record.order_no,
+        "warehouse_id": record.warehouse_id,
+        "warehouse_name": warehouse.name,
+        "external_order_no": record.external_order_no,
+        "delivery_method": record.delivery_method,
+        "recipient_name": record.recipient_name,
+        "recipient_phone": record.recipient_phone,
+        "recipient_address": record.recipient_address,
+        "carrier": record.carrier,
+        "tracking_no": record.tracking_no,
+        "status": record.status,
+        "remark": record.remark,
+        "operator_username": record.operator_username,
+        "shipped_at": record.shipped_at,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+        "items": serialize_warehouse_order_items(db, WarehouseOutboundItem, record.id),
+    }
+
+
+@app.get("/warehouse/summary", response_model=WarehouseSummaryResponse, summary="Warehouse overview")
+def get_warehouse_summary(
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    today_start = datetime.combine(datetime.now(TASK_BOOKKEEPING_TIMEZONE).date(), datetime.min.time())
+    low_stock_count = 0
+    stocks = db.scalars(select(WarehouseStock)).all()
+    products = {product.id: product for product in db.scalars(select(WarehouseProduct)).all()}
+    for stock in stocks:
+        product = products.get(stock.product_id)
+        if product and stock.quantity - stock.locked_quantity <= product.warning_quantity:
+            low_stock_count += 1
+    movements = db.scalars(
+        select(WarehouseStockMovement).where(WarehouseStockMovement.created_at >= today_start)
+    ).all()
+    return {
+        "warehouse_count": db.scalar(select(func.count(Warehouse.id)).where(Warehouse.is_active.is_(True))) or 0,
+        "product_count": db.scalar(select(func.count(WarehouseProduct.id)).where(WarehouseProduct.is_active.is_(True))) or 0,
+        "total_quantity": sum(stock.quantity for stock in stocks),
+        "total_cost": round(sum(stock.quantity * float(products.get(stock.product_id).cost_price or 0) for stock in stocks if products.get(stock.product_id)), 2),
+        "low_stock_count": low_stock_count,
+        "pending_outbound_count": db.scalar(
+            select(func.count(WarehouseOutboundOrder.id)).where(
+                WarehouseOutboundOrder.status.notin_(("shipped", "cancelled"))
+            )
+        ) or 0,
+        "today_inbound_quantity": sum(m.quantity_change for m in movements if m.quantity_change > 0),
+        "today_outbound_quantity": abs(sum(m.quantity_change for m in movements if m.quantity_change < 0)),
+    }
+
+
+@app.get("/warehouse/warehouses", response_model=list[WarehouseResponse], summary="List warehouses")
+def list_warehouses(db: Session = Depends(get_db), _: AdminUser = Depends(require_role("viewer"))):
+    return db.scalars(select(Warehouse).order_by(Warehouse.is_active.desc(), Warehouse.id.desc())).all()
+
+
+@app.post("/warehouse/warehouses", response_model=WarehouseResponse, status_code=201, summary="Create warehouse")
+def create_warehouse(
+    payload: WarehousePayload,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = Warehouse(**payload.model_dump())
+    record.code = record.code.strip()
+    record.name = record.name.strip()
+    db.add(record)
+    try:
+        db.flush()
+        write_audit_log(db, actor=current_user, action="warehouse_created", resource_type="warehouse", resource_id=record.id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="仓库编码已存在") from exc
+    db.refresh(record)
+    return record
+
+
+@app.put("/warehouse/warehouses/{warehouse_id}", response_model=WarehouseResponse, summary="Update warehouse")
+def update_warehouse(
+    warehouse_id: int,
+    payload: WarehousePayload,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = get_warehouse_or_404(db, warehouse_id)
+    for key, value in payload.model_dump().items():
+        setattr(record, key, value)
+    record.code = record.code.strip()
+    record.name = record.name.strip()
+    write_audit_log(db, actor=current_user, action="warehouse_updated", resource_type="warehouse", resource_id=record.id)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="仓库编码已存在") from exc
+    db.refresh(record)
+    return record
+
+
+@app.get("/warehouse/products", response_model=list[WarehouseProductResponse], summary="List warehouse products")
+def list_warehouse_products(db: Session = Depends(get_db), _: AdminUser = Depends(require_role("viewer"))):
+    records = db.scalars(select(WarehouseProduct).order_by(WarehouseProduct.is_active.desc(), WarehouseProduct.id.desc())).all()
+    return [serialize_warehouse_product(record) for record in records]
+
+
+@app.post("/warehouse/products", response_model=WarehouseProductResponse, status_code=201, summary="Create warehouse product")
+def create_warehouse_product(
+    payload: WarehouseProductPayload,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    values = payload.model_dump()
+    values["barcode"] = normalize_warehouse_text(values["barcode"])
+    record = WarehouseProduct(**values)
+    record.sku = record.sku.strip()
+    record.name = record.name.strip()
+    db.add(record)
+    try:
+        db.flush()
+        write_audit_log(db, actor=current_user, action="warehouse_product_created", resource_type="warehouse_product", resource_id=record.id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SKU 或条码已存在") from exc
+    db.refresh(record)
+    return serialize_warehouse_product(record)
+
+
+@app.put("/warehouse/products/{product_id}", response_model=WarehouseProductResponse, summary="Update warehouse product")
+def update_warehouse_product(
+    product_id: int,
+    payload: WarehouseProductPayload,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = get_warehouse_product_or_404(db, product_id)
+    values = payload.model_dump()
+    values["barcode"] = normalize_warehouse_text(values["barcode"])
+    for key, value in values.items():
+        setattr(record, key, value)
+    record.sku = record.sku.strip()
+    record.name = record.name.strip()
+    write_audit_log(db, actor=current_user, action="warehouse_product_updated", resource_type="warehouse_product", resource_id=record.id)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="SKU 或条码已存在") from exc
+    db.refresh(record)
+    return serialize_warehouse_product(record)
+
+
+@app.get("/warehouse/products/{product_id}/image-file", summary="View warehouse product image")
+def get_warehouse_product_image_file(
+    product_id: int,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    record = get_warehouse_product_or_404(db, product_id)
+    if not record.image_path:
+        raise HTTPException(status_code=404, detail="商品图片不存在")
+    image_file = (UPLOADS_DIR / record.image_path).resolve()
+    try:
+        image_file.relative_to(UPLOADS_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="商品图片不存在") from exc
+    if not image_file.is_file():
+        raise HTTPException(status_code=404, detail="商品图片不存在")
+    media_type, _ = mimetypes.guess_type(image_file.name)
+    return FileResponse(image_file, media_type=media_type or "application/octet-stream", filename=record.image_name or image_file.name, content_disposition_type="inline")
+
+
+@app.post("/warehouse/products/{product_id}/image", response_model=WarehouseProductResponse, summary="Upload warehouse product image")
+async def upload_warehouse_product_image(
+    product_id: int,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = get_warehouse_product_or_404(db, product_id)
+    await save_warehouse_product_image(record, image)
+    write_audit_log(db, actor=current_user, action="warehouse_product_image_updated", resource_type="warehouse_product", resource_id=record.id)
+    commit_session(db, default_detail="商品图片保存失败")
+    db.refresh(record)
+    return serialize_warehouse_product(record)
+
+
+@app.get("/warehouse/stocks", response_model=list[WarehouseStockResponse], summary="List warehouse stocks")
+def list_warehouse_stocks(db: Session = Depends(get_db), _: AdminUser = Depends(require_role("viewer"))):
+    warehouses = {record.id: record for record in db.scalars(select(Warehouse)).all()}
+    products = {record.id: record for record in db.scalars(select(WarehouseProduct)).all()}
+    stocks = {(record.warehouse_id, record.product_id): record for record in db.scalars(select(WarehouseStock)).all()}
+    result = []
+    for warehouse in warehouses.values():
+        for product in products.values():
+            stock = stocks.get((warehouse.id, product.id))
+            quantity = stock.quantity if stock else 0
+            locked_quantity = stock.locked_quantity if stock else 0
+            available_quantity = quantity - locked_quantity
+            result.append({
+                "id": stock.id if stock else None,
+                "warehouse_id": warehouse.id,
+                "warehouse_code": warehouse.code,
+                "warehouse_name": warehouse.name,
+                "product_id": product.id,
+                "sku": product.sku,
+                "product_name": product.name,
+                "barcode": product.barcode,
+                "specification": product.specification,
+                "unit": product.unit,
+                "cost_price": float(product.cost_price or 0),
+                "image_url": build_warehouse_product_image_url(product),
+                "quantity": quantity,
+                "locked_quantity": locked_quantity,
+                "available_quantity": available_quantity,
+                "warning_quantity": product.warning_quantity,
+                "is_low_stock": available_quantity <= product.warning_quantity,
+                "updated_at": stock.updated_at if stock else None,
+            })
+    return result
+
+
+@app.get("/warehouse/inbound-orders", response_model=list[WarehouseInboundOrderResponse], summary="List inbound orders")
+def list_warehouse_inbound_orders(db: Session = Depends(get_db), _: AdminUser = Depends(require_role("viewer"))):
+    records = db.scalars(select(WarehouseInboundOrder).order_by(WarehouseInboundOrder.id.desc()).limit(500)).all()
+    return [serialize_warehouse_inbound_order(db, record) for record in records]
+
+
+@app.post("/warehouse/inbound-orders", response_model=WarehouseInboundOrderResponse, status_code=201, summary="Complete inbound order")
+def create_warehouse_inbound_order(
+    payload: WarehouseInboundOrderCreate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    warehouse = get_warehouse_or_404(db, payload.warehouse_id)
+    if not warehouse.is_active:
+        raise HTTPException(status_code=409, detail="仓库已停用")
+    lines = merge_warehouse_order_lines(payload.items)
+    products = {product_id: get_warehouse_product_or_404(db, product_id) for product_id in lines}
+    if any(not product.is_active for product in products.values()):
+        raise HTTPException(status_code=409, detail="入库商品中包含已停用商品")
+    now = datetime.utcnow()
+    order = WarehouseInboundOrder(
+        order_no=generate_warehouse_order_no("RK"), warehouse_id=warehouse.id,
+        source_type=payload.source_type, supplier=normalize_warehouse_text(payload.supplier),
+        status="completed", remark=normalize_warehouse_text(payload.remark),
+        operator_user_id=current_user.id, operator_username=current_user.username,
+        completed_at=now,
+    )
+    db.add(order)
+    db.flush()
+    for product_id, quantity in lines.items():
+        db.add(WarehouseInboundItem(order_id=order.id, product_id=product_id, quantity=quantity))
+        stock = db.scalar(
+            select(WarehouseStock)
+            .where(WarehouseStock.warehouse_id == warehouse.id, WarehouseStock.product_id == product_id)
+            .with_for_update()
+        )
+        if stock is None:
+            stock = WarehouseStock(warehouse_id=warehouse.id, product_id=product_id, quantity=0, locked_quantity=0)
+            db.add(stock)
+        stock.quantity += quantity
+        db.flush()
+        db.add(WarehouseStockMovement(
+            warehouse_id=warehouse.id, product_id=product_id, movement_type="inbound",
+            quantity_change=quantity, quantity_after=stock.quantity, reference_type="inbound_order",
+            reference_id=order.id, reference_no=order.order_no, operator_user_id=current_user.id,
+            operator_username=current_user.username, remark=order.remark,
+        ))
+    write_audit_log(db, actor=current_user, action="warehouse_inbound_completed", resource_type="warehouse_inbound_order", resource_id=order.id, details={"order_no": order.order_no})
+    db.commit()
+    db.refresh(order)
+    return serialize_warehouse_inbound_order(db, order)
+
+
+def reverse_warehouse_inbound_order(
+    db: Session,
+    order: WarehouseInboundOrder,
+    current_user: AdminUser,
+    *,
+    reason: str,
+) -> None:
+    if order.status != "completed":
+        raise HTTPException(status_code=409, detail="该入库单已撤销，不能重复操作")
+    items = db.scalars(
+        select(WarehouseInboundItem).where(WarehouseInboundItem.order_id == order.id).order_by(WarehouseInboundItem.id)
+    ).all()
+    for item in items:
+        stock = db.scalar(
+            select(WarehouseStock)
+            .where(WarehouseStock.warehouse_id == order.warehouse_id, WarehouseStock.product_id == item.product_id)
+            .with_for_update()
+        )
+        available = (stock.quantity - stock.locked_quantity) if stock else 0
+        if stock is None or available < item.quantity:
+            product = get_warehouse_product_or_404(db, item.product_id)
+            raise HTTPException(
+                status_code=409,
+                detail=f"{product.sku} 当前可用库存不足，可能已出库或被锁定，无法撤销原入库",
+            )
+    for item in items:
+        stock = db.scalar(
+            select(WarehouseStock)
+            .where(WarehouseStock.warehouse_id == order.warehouse_id, WarehouseStock.product_id == item.product_id)
+            .with_for_update()
+        )
+        stock.quantity -= item.quantity
+        db.flush()
+        db.add(WarehouseStockMovement(
+            warehouse_id=order.warehouse_id, product_id=item.product_id, movement_type="inbound_correction",
+            quantity_change=-item.quantity, quantity_after=stock.quantity, reference_type="inbound_order_correction",
+            reference_id=order.id, reference_no=order.order_no, operator_user_id=current_user.id,
+            operator_username=current_user.username, remark=reason,
+        ))
+
+
+@app.put("/warehouse/inbound-orders/{order_id}", response_model=WarehouseInboundOrderResponse, summary="Correct inbound order")
+def update_warehouse_inbound_order(
+    order_id: int,
+    payload: WarehouseInboundOrderCreate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    order = db.get(WarehouseInboundOrder, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="入库单不存在")
+    warehouse = get_warehouse_or_404(db, payload.warehouse_id)
+    if not warehouse.is_active:
+        raise HTTPException(status_code=409, detail="仓库已停用")
+    lines = merge_warehouse_order_lines(payload.items)
+    products = {product_id: get_warehouse_product_or_404(db, product_id) for product_id in lines}
+    if any(not product.is_active for product in products.values()):
+        raise HTTPException(status_code=409, detail="入库商品中包含已停用商品")
+    try:
+        reverse_warehouse_inbound_order(db, order, current_user, reason="编辑入库单，回退原库存")
+        old_items = db.scalars(select(WarehouseInboundItem).where(WarehouseInboundItem.order_id == order.id)).all()
+        for item in old_items:
+            db.delete(item)
+        order.warehouse_id = warehouse.id
+        order.source_type = payload.source_type
+        order.supplier = normalize_warehouse_text(payload.supplier)
+        order.remark = normalize_warehouse_text(payload.remark)
+        order.operator_user_id = current_user.id
+        order.operator_username = current_user.username
+        order.completed_at = datetime.utcnow()
+        for product_id, quantity in lines.items():
+            db.add(WarehouseInboundItem(order_id=order.id, product_id=product_id, quantity=quantity))
+            stock = db.scalar(
+                select(WarehouseStock)
+                .where(WarehouseStock.warehouse_id == warehouse.id, WarehouseStock.product_id == product_id)
+                .with_for_update()
+            )
+            if stock is None:
+                stock = WarehouseStock(warehouse_id=warehouse.id, product_id=product_id, quantity=0, locked_quantity=0)
+                db.add(stock)
+            stock.quantity += quantity
+            db.flush()
+            db.add(WarehouseStockMovement(
+                warehouse_id=warehouse.id, product_id=product_id, movement_type="inbound_correction",
+                quantity_change=quantity, quantity_after=stock.quantity, reference_type="inbound_order_correction",
+                reference_id=order.id, reference_no=order.order_no, operator_user_id=current_user.id,
+                operator_username=current_user.username, remark="编辑入库单，重新入库",
+            ))
+        write_audit_log(db, actor=current_user, action="warehouse_inbound_corrected", resource_type="warehouse_inbound_order", resource_id=order.id, details={"order_no": order.order_no})
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(order)
+    return serialize_warehouse_inbound_order(db, order)
+
+
+@app.delete("/warehouse/inbound-orders/{order_id}", response_model=WarehouseInboundOrderResponse, summary="Cancel inbound order")
+def cancel_warehouse_inbound_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    order = db.get(WarehouseInboundOrder, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="入库单不存在")
+    try:
+        reverse_warehouse_inbound_order(db, order, current_user, reason="撤销错误入库单")
+        order.status = "cancelled"
+        write_audit_log(db, actor=current_user, action="warehouse_inbound_cancelled", resource_type="warehouse_inbound_order", resource_id=order.id, details={"order_no": order.order_no})
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(order)
+    return serialize_warehouse_inbound_order(db, order)
+
+
+@app.get("/warehouse/outbound-orders", response_model=list[WarehouseOutboundOrderResponse], summary="List outbound orders")
+def list_warehouse_outbound_orders(db: Session = Depends(get_db), _: AdminUser = Depends(require_role("viewer"))):
+    records = db.scalars(select(WarehouseOutboundOrder).order_by(WarehouseOutboundOrder.id.desc()).limit(500)).all()
+    return [serialize_warehouse_outbound_order(db, record) for record in records]
+
+
+@app.post("/warehouse/outbound-orders", response_model=WarehouseOutboundOrderResponse, status_code=201, summary="Create outbound order")
+def create_warehouse_outbound_order(
+    payload: WarehouseOutboundOrderCreate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    warehouse = get_warehouse_or_404(db, payload.warehouse_id)
+    if not warehouse.is_active:
+        raise HTTPException(status_code=409, detail="仓库已停用")
+    lines = merge_warehouse_order_lines(payload.items)
+    products = {product_id: get_warehouse_product_or_404(db, product_id) for product_id in lines}
+    if any(not product.is_active for product in products.values()):
+        raise HTTPException(status_code=409, detail="出库商品中包含已停用商品")
+    stocks: dict[int, WarehouseStock] = {}
+    for product_id, quantity in lines.items():
+        stock = db.scalar(
+            select(WarehouseStock)
+            .where(WarehouseStock.warehouse_id == warehouse.id, WarehouseStock.product_id == product_id)
+            .with_for_update()
+        )
+        available = (stock.quantity - stock.locked_quantity) if stock else 0
+        if stock is None or available < quantity:
+            raise HTTPException(status_code=409, detail=f"SKU {products[product_id].sku} 可用库存不足，当前可用 {available}")
+        stocks[product_id] = stock
+    order = WarehouseOutboundOrder(
+        order_no=generate_warehouse_order_no("CK"), warehouse_id=warehouse.id,
+        external_order_no=normalize_warehouse_text(payload.external_order_no),
+        delivery_method=payload.delivery_method,
+        recipient_name=normalize_warehouse_text(payload.recipient_name), recipient_phone=normalize_warehouse_text(payload.recipient_phone),
+        recipient_address=normalize_warehouse_text(payload.recipient_address), carrier=normalize_warehouse_text(payload.carrier),
+        tracking_no=normalize_warehouse_text(payload.tracking_no), status="pending", remark=normalize_warehouse_text(payload.remark),
+        operator_user_id=current_user.id, operator_username=current_user.username,
+    )
+    db.add(order)
+    db.flush()
+    for product_id, quantity in lines.items():
+        stocks[product_id].locked_quantity += quantity
+        db.add(WarehouseOutboundItem(order_id=order.id, product_id=product_id, quantity=quantity))
+    write_audit_log(db, actor=current_user, action="warehouse_outbound_created", resource_type="warehouse_outbound_order", resource_id=order.id, details={"order_no": order.order_no})
+    db.commit()
+    db.refresh(order)
+    return serialize_warehouse_outbound_order(db, order)
+
+
+@app.patch("/warehouse/outbound-orders/{order_id}/status", response_model=WarehouseOutboundOrderResponse, summary="Advance outbound workflow")
+def update_warehouse_outbound_status(
+    order_id: int,
+    payload: WarehouseOutboundStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    order = db.scalar(
+        select(WarehouseOutboundOrder)
+        .where(WarehouseOutboundOrder.id == order_id)
+        .with_for_update()
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="出库单不存在")
+    transitions = {
+        "pending": {"picking", "cancelled"}, "picking": {"checked", "cancelled"},
+        "checked": {"packed", "cancelled"}, "packed": {"shipped", "cancelled"},
+        "shipped": set(), "cancelled": set(),
+    }
+    if payload.status not in transitions.get(order.status, set()):
+        raise HTTPException(status_code=409, detail="不能从当前状态执行该操作")
+    items = db.scalars(select(WarehouseOutboundItem).where(WarehouseOutboundItem.order_id == order.id)).all()
+    stocks: dict[int, WarehouseStock] = {}
+    for item in items:
+        stock = db.scalar(
+            select(WarehouseStock)
+            .where(WarehouseStock.warehouse_id == order.warehouse_id, WarehouseStock.product_id == item.product_id)
+            .with_for_update()
+        )
+        if stock is None or stock.locked_quantity < item.quantity:
+            raise HTTPException(status_code=409, detail="锁定库存异常，请检查库存流水")
+        stocks[item.product_id] = stock
+    order.carrier = normalize_warehouse_text(payload.carrier) or order.carrier
+    order.tracking_no = normalize_warehouse_text(payload.tracking_no) or order.tracking_no
+    if payload.status == "shipped":
+        if order.delivery_method == "shipping" and (not order.carrier or not order.tracking_no):
+            raise HTTPException(status_code=422, detail="发货前必须填写快递公司和物流单号")
+        for item in items:
+            stock = stocks[item.product_id]
+            if stock.quantity < item.quantity:
+                raise HTTPException(status_code=409, detail="实际库存不足，无法出库")
+            stock.quantity -= item.quantity
+            stock.locked_quantity -= item.quantity
+            db.add(WarehouseStockMovement(
+                warehouse_id=order.warehouse_id, product_id=item.product_id, movement_type="outbound",
+                quantity_change=-item.quantity, quantity_after=stock.quantity, reference_type="outbound_order",
+                reference_id=order.id, reference_no=order.order_no, operator_user_id=current_user.id,
+                operator_username=current_user.username, remark=order.remark,
+            ))
+        order.shipped_at = datetime.utcnow()
+    elif payload.status == "cancelled":
+        for item in items:
+            stocks[item.product_id].locked_quantity -= item.quantity
+    order.status = payload.status
+    order.operator_user_id = current_user.id
+    order.operator_username = current_user.username
+    write_audit_log(db, actor=current_user, action="warehouse_outbound_status_updated", resource_type="warehouse_outbound_order", resource_id=order.id, details={"order_no": order.order_no, "status": order.status})
+    db.commit()
+    db.refresh(order)
+    return serialize_warehouse_outbound_order(db, order)
+
+
+@app.get("/warehouse/movements", response_model=list[WarehouseStockMovementResponse], summary="List stock movements")
+def list_warehouse_movements(db: Session = Depends(get_db), _: AdminUser = Depends(require_role("viewer"))):
+    records = db.scalars(select(WarehouseStockMovement).order_by(WarehouseStockMovement.id.desc()).limit(1000)).all()
+    warehouses = {record.id: record for record in db.scalars(select(Warehouse)).all()}
+    products = {record.id: record for record in db.scalars(select(WarehouseProduct)).all()}
+    return [{
+        "id": record.id, "warehouse_id": record.warehouse_id,
+        "warehouse_name": warehouses.get(record.warehouse_id).name if warehouses.get(record.warehouse_id) else "-",
+        "product_id": record.product_id,
+        "sku": products.get(record.product_id).sku if products.get(record.product_id) else "-",
+        "product_name": products.get(record.product_id).name if products.get(record.product_id) else "-",
+        "movement_type": record.movement_type, "quantity_change": record.quantity_change,
+        "quantity_after": record.quantity_after, "reference_type": record.reference_type,
+        "reference_id": record.reference_id, "reference_no": record.reference_no,
+        "operator_username": record.operator_username, "remark": record.remark, "created_at": record.created_at,
+    } for record in records]

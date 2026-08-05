@@ -43,6 +43,7 @@ grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$VERSION\"" "$APP_DIR/frontend/d
 
 python3 -m py_compile "$APP_DIR/main.py" "$APP_DIR/app/api/routes/health.py" "$APP_DIR/app/api/routes/server_status.py"
 cd "$APP_DIR"
+"$APP_DIR/.venv/bin/python" -m pip install --disable-pip-version-check -r requirements.txt
 "$APP_DIR/.venv/bin/python" -m unittest discover -s tests -v
 rm -rf "$APP_DIR/frontend/dist"
 mv "$APP_DIR/frontend/dist.stage-$VERSION" "$APP_DIR/frontend/dist"

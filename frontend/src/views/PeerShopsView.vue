@@ -77,13 +77,13 @@ const form = reactive({
   shop_name: '',
   shop_url: '',
   remark: '',
+  extra_fields: {} as Record<string, string>,
 })
 
 let objectPreviewUrl: string | null = null
 
 const canEditPeerShops = computed(() => {
-  const role = authStore.currentUser?.role
-  return role === 'editor' || role === 'superadmin'
+  return authStore.canWrite('peer_shops')
 })
 
 const editingPeerShopRecord = computed(() =>
@@ -93,7 +93,6 @@ const editingPeerShopRecord = computed(() =>
 )
 
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 360))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 300))
 const pageSize = computed(() => 20)
 
 const filteredRecords = computed(() => {
@@ -108,6 +107,7 @@ const filteredRecords = computed(() => {
       record.shop_url ?? '',
       record.remark ?? '',
       record.image_name ?? '',
+      ...Object.values(record.extra_fields ?? {}),
     ]
       .join(' ')
       .toLowerCase()
@@ -192,6 +192,7 @@ function resetForm() {
   form.shop_name = ''
   form.shop_url = ''
   form.remark = ''
+  form.extra_fields = {}
   selectedImageFile.value = null
   uploadFileList.value = []
   setExistingPreview(null)
@@ -209,6 +210,7 @@ function openEditDialog(record: PeerShop) {
   form.shop_name = record.shop_name
   form.shop_url = record.shop_url ?? ''
   form.remark = record.remark ?? ''
+  form.extra_fields = Object.fromEntries(Object.entries(record.extra_fields ?? {}).map(([key, value]) => [key, String(value ?? '')]))
   setExistingPreview(record.image_url)
   dialogVisible.value = true
 }
@@ -224,6 +226,7 @@ function buildPayload() {
     shop_name: form.shop_name.trim(),
     shop_url: form.shop_url.trim() || null,
     remark: form.remark.trim() || null,
+    extra_fields: { ...form.extra_fields },
   }
 }
 
@@ -593,10 +596,19 @@ onMounted(loadData)
           >
             <template #default="{ row }">
               <div v-if="column.key === 'shop_url'" class="cell-actions">
-                <span class="single-line-text">{{ row.shop_url || '未设置' }}</span>
-                <el-button v-if="row.shop_url" type="primary" link :icon="LinkIcon" @click="openLink(row.shop_url)">
-                  打开
-                </el-button>
+                <a
+                  v-if="row.shop_url"
+                  class="shop-link"
+                  :href="row.shop_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="`打开店铺：${row.shop_url}`"
+                  @click.stop
+                >
+                  <span class="shop-link__text">{{ row.shop_url }}</span>
+                  <el-icon class="shop-link__icon"><LinkIcon /></el-icon>
+                </a>
+                <span v-else class="single-line-text">未设置</span>
               </div>
               <div v-else-if="column.key === 'image'" class="cell-actions">
                 <el-tag :type="row.image_url ? 'success' : 'info'" round>
@@ -631,6 +643,7 @@ onMounted(loadData)
                 </el-button>
               </div>
               <span v-else-if="column.key === 'created_at'">{{ formatDateTime(row.created_at) }}</span>
+              <span v-else-if="column.custom">{{ row.extra_fields?.[column.key] ?? '-' }}</span>
               <span v-else>{{ row[column.key as keyof PeerShop] ?? '-' }}</span>
             </template>
           </el-table-column>
@@ -653,7 +666,7 @@ onMounted(loadData)
       </div>
 
       <div v-else class="table-area fixed-list-shell">
-        <div v-loading="loading" class="peer-shop-card-list fixed-list-mobile" :style="{ maxHeight: `${mobileListHeight}px` }">
+        <div v-loading="loading" class="peer-shop-card-list fixed-list-mobile">
           <template v-if="paginatedRecords.length">
             <article
               v-for="record in paginatedRecords"
@@ -674,7 +687,18 @@ onMounted(loadData)
               <div class="peer-shop-mobile-card__grid">
                 <div class="peer-shop-mobile-card__field">
                   <span class="peer-shop-mobile-card__label">店铺链接</span>
-                  <span class="peer-shop-mobile-card__value">{{ record.shop_url || '未设置' }}</span>
+                  <a
+                    v-if="record.shop_url"
+                    class="peer-shop-mobile-card__value shop-link"
+                    :href="record.shop_url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    :title="`打开店铺：${record.shop_url}`"
+                  >
+                    <span class="shop-link__text">{{ record.shop_url }}</span>
+                    <el-icon class="shop-link__icon"><LinkIcon /></el-icon>
+                  </a>
+                  <span v-else class="peer-shop-mobile-card__value">未设置</span>
                 </div>
 
                 <div class="peer-shop-mobile-card__field">
@@ -787,6 +811,11 @@ onMounted(loadData)
               />
             </el-form-item>
           </el-col>
+          <el-col v-for="column in tableColumns.filter((item) => item.custom)" :key="column.key" :span="12">
+            <el-form-item :label="column.label">
+              <el-input v-model="form.extra_fields[column.key]" :placeholder="`请输入${column.label}`" />
+            </el-form-item>
+          </el-col>
           <el-col :span="24">
             <el-form-item label="执照图片">
               <el-upload
@@ -893,6 +922,42 @@ onMounted(loadData)
 
 .peer-shop-image-inline-actions {
   margin-top: 8px;
+}
+
+.shop-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--brand-primary);
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+  transition: color 160ms ease, text-decoration-color 160ms ease;
+}
+
+.shop-link:hover {
+  color: var(--brand-primary-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.shop-link:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid color-mix(in srgb, var(--brand-primary) 36%, transparent);
+  outline-offset: 2px;
+}
+
+.shop-link__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shop-link__icon {
+  flex: 0 0 auto;
+  font-size: 13px;
 }
 
 .peer-shop-card-list {

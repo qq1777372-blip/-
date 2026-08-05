@@ -127,7 +127,7 @@ const canEdit = computed(() => {
     return false
   }
 
-  return currentUser.role === 'superadmin' || currentUser.id === currentArticle.author_user_id
+  return authStore.canWrite('links') && (currentUser.role === 'superadmin' || currentUser.id === currentArticle.author_user_id)
 })
 
 function getErrorMessage(error: unknown, fallback: string) {

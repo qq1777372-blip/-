@@ -105,11 +105,37 @@ const shouldShowPagination = computed(() => props.showPagination)
 
 @media (max-width: 768px) {
   .list-pagination-footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
     padding-top: 12px;
   }
 
+  .list-pagination-footer__summary {
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .list-pagination-footer__summary span + span::before {
+    margin-right: 8px;
+  }
+
+  .list-pagination-footer__summary span:nth-child(3) {
+    display: none;
+  }
+
   .list-pagination-footer :deep(.el-pagination) {
+    justify-content: center;
+    width: 100%;
     margin-left: 0;
+  }
+
+  .list-pagination-footer :deep(.el-pager li),
+  .list-pagination-footer :deep(.btn-prev),
+  .list-pagination-footer :deep(.btn-next) {
+    min-width: 32px;
+    height: 32px;
+    border-radius: 8px;
   }
 }
 </style>

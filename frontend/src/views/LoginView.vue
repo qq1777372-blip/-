@@ -15,11 +15,14 @@ const authStore = useAuthStore()
 
 const loading = ref(false)
 const captchaLoading = ref(false)
+const captchaRequired = ref(false)
+const totpRequired = ref(false)
 const rememberLogin = ref(false)
 const form = reactive({
   username: '',
   password: '',
   captcha_code: '',
+  totp_code: '',
 })
 const captcha = reactive({
   captcha_id: '',
@@ -91,8 +94,13 @@ async function submit() {
     return
   }
 
-  if (!captcha.captcha_id || !form.captcha_code.trim()) {
+  if (captchaRequired.value && (!captcha.captcha_id || !form.captcha_code.trim())) {
     ElMessage.warning('请输入验证码')
+    return
+  }
+
+  if (totpRequired.value && !form.totp_code.trim()) {
+    ElMessage.warning('请输入动态验证码')
     return
   }
 
@@ -102,8 +110,9 @@ async function submit() {
     await authStore.signIn({
       username: form.username.trim(),
       password: form.password,
-      captcha_id: captcha.captcha_id,
-      captcha_code: form.captcha_code.trim(),
+      captcha_id: captchaRequired.value ? captcha.captcha_id : null,
+      captcha_code: captchaRequired.value ? form.captcha_code.trim() : null,
+      totp_code: totpRequired.value ? form.totp_code.trim() : null,
     })
     persistRememberedLogin()
 
@@ -115,7 +124,15 @@ async function submit() {
     await router.replace(redirect)
   } catch (error) {
     ElMessage.error(getErrorMessage(error, '登录失败'))
-    await loadCaptcha()
+    if (axios.isAxiosError(error) && error.response?.headers['x-totp-required'] === 'true') {
+      totpRequired.value = true
+      form.totp_code = ''
+    } else if (axios.isAxiosError(error) && (error.response?.status === 428 || error.response?.headers['x-captcha-required'] === 'true')) {
+      captchaRequired.value = true
+      await loadCaptcha()
+    } else if (captchaRequired.value) {
+      await loadCaptcha()
+    }
   } finally {
     loading.value = false
   }
@@ -123,7 +140,6 @@ async function submit() {
 
 onMounted(() => {
   loadRememberedLogin()
-  void loadCaptcha(true)
 })
 </script>
 
@@ -131,9 +147,9 @@ onMounted(() => {
   <div class="auth-shell">
     <div class="auth-card">
       <div class="auth-brand">
-        <span class="soft-tag">企业后台升级版</span>
-        <h1>RuoShop 管理后台</h1>
-        <p>新的前端将基于 Vue 3 + Element Plus 持续替换旧静态页面，先统一后台框架，再逐步细化业务模块。</p>
+        <div class="auth-logo" aria-hidden="true">RS</div>
+        <h1>内部管理系统</h1>
+        <p>管理员登录</p>
       </div>
 
       <el-form label-position="top" @submit.prevent="submit">
@@ -158,7 +174,7 @@ onMounted(() => {
           />
         </el-form-item>
 
-        <el-form-item label="验证码">
+        <el-form-item v-if="captchaRequired" label="验证码">
           <div class="auth-captcha-row">
             <el-input
               v-model="form.captcha_code"
@@ -181,9 +197,19 @@ onMounted(() => {
           </div>
         </el-form-item>
 
+        <el-form-item v-if="totpRequired" label="动态验证码">
+          <el-input
+            v-model="form.totp_code"
+            inputmode="numeric"
+            maxlength="6"
+            autocomplete="one-time-code"
+            placeholder="身份验证器中的6位验证码"
+            @keyup.enter="submit"
+          />
+        </el-form-item>
+
         <div class="auth-remember-row">
-          <el-checkbox v-model="rememberLogin">记住账号密码</el-checkbox>
-          <span class="auth-remember-tip">仅保存在当前浏览器</span>
+          <el-checkbox v-model="rememberLogin">记住账号</el-checkbox>
         </div>
 
         <el-button type="primary" size="large" :loading="loading" style="width: 100%" @click="submit">
@@ -195,10 +221,23 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.auth-logo {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  margin: 0 auto 12px;
+  border-radius: 8px;
+  background: #6264f5;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+}
+
 .auth-captcha-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 136px auto;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 126px 32px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -206,11 +245,11 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 136px;
-  height: 44px;
+  width: 126px;
+  height: 40px;
   padding: 0;
   border: 1px solid rgba(203, 213, 225, 0.9);
-  border-radius: 10px;
+  border-radius: 6px;
   background: #f8fafc;
   overflow: hidden;
   cursor: pointer;
@@ -235,14 +274,7 @@ onMounted(() => {
 .auth-remember-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: -4px 0 16px;
-}
-
-.auth-remember-tip {
-  color: var(--text-secondary);
-  font-size: 12px;
+  margin: -4px 0 14px;
 }
 
 @media (max-width: 640px) {

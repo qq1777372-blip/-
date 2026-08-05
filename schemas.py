@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 FieldType = Literal["text", "number", "date"]
 RoleType = Literal["software", "viewer", "editor", "superadmin"]
 AdminRoleType = Literal["viewer", "editor", "superadmin"]
+PermissionLevel = Literal["none", "read", "write"]
 AccountType = Literal["staff", "developer", "admin", "viewer"]
 TaskStatusType = Literal["pending", "completed"]
 SavedLinkPushStatusType = Literal["idle", "scheduled", "sending", "sent", "failed"]
@@ -196,6 +197,7 @@ class PeerShopBase(BaseModel):
     shop_name: str = Field(..., min_length=1, max_length=120)
     shop_url: str | None = Field(default=None, max_length=1000)
     remark: str | None = Field(default=None)
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("shop_name", mode="before")
     @classmethod
@@ -251,6 +253,7 @@ class AccountUsageRecordBase(BaseModel):
     usage_notes: str | None = Field(default=None)
     is_banned: bool = Field(default=False)
     banned_reason: str | None = Field(default=None, max_length=255)
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("account_name", mode="before")
     @classmethod
@@ -282,6 +285,7 @@ class AccountUsageRecordUpdate(BaseModel):
     usage_notes: str | None = Field(default=None)
     is_banned: bool = Field(default=False)
     banned_reason: str | None = Field(default=None, max_length=255)
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("account_name", mode="before")
     @classmethod
@@ -312,6 +316,7 @@ class AccountUsageRecordResponse(BaseModel):
     id: int
     has_password: bool = False
     created_at: datetime
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -338,6 +343,7 @@ class MobileDeviceRecordBase(BaseModel):
     primary_card: str | None = Field(default=None, max_length=50)
     secondary_card: str | None = Field(default=None, max_length=50)
     remark: str | None = Field(default=None)
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("device_name", mode="before")
     @classmethod
@@ -372,6 +378,7 @@ class MobileDeviceRecordResponse(BaseModel):
     secondary_card: str | None = None
     remark: str | None = None
     created_at: datetime
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -640,8 +647,9 @@ class FieldDefinitionResponse(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=50)
     password: str = Field(..., min_length=1, max_length=128)
-    captcha_id: str = Field(..., min_length=1, max_length=128)
-    captcha_code: str = Field(..., min_length=1, max_length=16)
+    captcha_id: str | None = Field(default=None, max_length=128)
+    captcha_code: str | None = Field(default=None, max_length=16)
+    totp_code: str | None = Field(default=None, max_length=8)
 
     @field_validator("username")
     @classmethod
@@ -653,25 +661,45 @@ class LoginRequest(BaseModel):
 
     @field_validator("captcha_id")
     @classmethod
-    def normalize_captcha_id(cls, value: str) -> str:
+    def normalize_captcha_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
-        if not normalized:
-            raise ValueError("captcha_id cannot be empty")
-        return normalized
+        return normalized or None
 
     @field_validator("captcha_code")
     @classmethod
-    def normalize_captcha_code(cls, value: str) -> str:
+    def normalize_captcha_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = re.sub(r"\s+", "", value).strip().upper()
-        if not normalized:
-            raise ValueError("captcha_code cannot be empty")
-        return normalized
+        return normalized or None
 
 
 class LoginCaptchaResponse(BaseModel):
     captcha_id: str
     image_data: str
     expires_in_seconds: int
+
+
+class TotpSetupRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+
+
+class TotpSetupResponse(BaseModel):
+    secret: str
+    provisioning_uri: str
+    qr_image_data: str
+
+
+class TotpConfirmRequest(BaseModel):
+    secret: str = Field(..., min_length=16, max_length=64)
+    code: str = Field(..., min_length=6, max_length=8)
+
+
+class TotpDisableRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    code: str = Field(..., min_length=6, max_length=8)
 
 
 class RegisterRequest(BaseModel):
@@ -719,6 +747,7 @@ class AdminUserCreateRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=50)
     password: str = Field(..., min_length=8, max_length=128)
     role: RoleType = Field(default="editor")
+    permissions: dict[str, PermissionLevel] | None = None
 
     @field_validator("username")
     @classmethod
@@ -733,6 +762,15 @@ class AdminUserStatusUpdateRequest(BaseModel):
     is_active: bool
 
 
+class AdminUserAccessUpdateRequest(BaseModel):
+    role: AdminRoleType
+    permissions: dict[str, PermissionLevel] = Field(default_factory=dict)
+
+
+class AdminUserPasswordResetRequest(BaseModel):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 class CurrentUserResponse(BaseModel):
     id: int
     username: str
@@ -742,6 +780,8 @@ class CurrentUserResponse(BaseModel):
     is_active: bool
     avatar_url: str | None = None
     avatar_name: str | None = None
+    permissions: dict[str, PermissionLevel] = Field(default_factory=dict)
+    totp_enabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -762,6 +802,7 @@ class AdminUserResponse(BaseModel):
     display_name: str | None = None
     role: RoleType
     is_active: bool
+    permissions: dict[str, PermissionLevel] = Field(default_factory=dict)
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -908,6 +949,42 @@ class DashboardStatsResponse(BaseModel):
     recent_license_records: list[DashboardRecentLicenseRecord]
 
 
+class SystemSettingsResponse(BaseModel):
+    license_expiry_days: int = Field(default=30, ge=1, le=365)
+    stale_task_days: int = Field(default=3, ge=1, le=90)
+    login_failure_threshold: int = Field(default=3, ge=1, le=20)
+    session_duration_hours: int = Field(default=168, ge=1, le=720)
+    low_stock_alert_enabled: bool = True
+    pending_outbound_alert_enabled: bool = True
+    task_alert_enabled: bool = True
+    security_alert_enabled: bool = True
+
+
+class SystemAlertItem(BaseModel):
+    key: str
+    category: Literal["inventory", "outbound", "license", "task", "security"]
+    severity: Literal["critical", "warning", "info"]
+    title: str
+    description: str
+    route: str
+    occurred_at: datetime | None = None
+    acknowledged: bool = False
+    acknowledged_at: datetime | None = None
+    acknowledged_by: str | None = None
+
+
+class SystemAlertListResponse(BaseModel):
+    total: int
+    open_count: int
+    acknowledged_count: int
+    critical_count: int
+    items: list[SystemAlertItem]
+
+
+class SystemAlertStatusRequest(BaseModel):
+    acknowledged: bool
+
+
 class ServerServiceStatusResponse(BaseModel):
     name: str
     display_name: str
@@ -962,3 +1039,171 @@ class ServerStatusResponse(BaseModel):
     backup_database_total_size_bytes: int
     services: list[ServerServiceStatusResponse]
     databases: list[ServerDatabaseStatusResponse]
+
+
+class WarehousePayload(BaseModel):
+    code: str = Field(..., min_length=1, max_length=50)
+    name: str = Field(..., min_length=1, max_length=100)
+    address: str | None = Field(default=None, max_length=255)
+    contact_name: str | None = Field(default=None, max_length=50)
+    contact_phone: str | None = Field(default=None, max_length=30)
+    is_active: bool = True
+    remark: str | None = None
+
+
+class WarehouseResponse(WarehousePayload):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WarehouseProductPayload(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=100)
+    name: str = Field(..., min_length=1, max_length=150)
+    barcode: str | None = Field(default=None, max_length=100)
+    specification: str | None = Field(default=None, max_length=150)
+    unit: str = Field(default="件", min_length=1, max_length=20)
+    cost_price: float = Field(default=0, ge=0)
+    warning_quantity: int = Field(default=0, ge=0)
+    is_active: bool = True
+    remark: str | None = None
+
+
+class WarehouseProductResponse(WarehouseProductPayload):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    image_url: str | None = None
+    image_name: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WarehouseStockResponse(BaseModel):
+    id: int | None = None
+    warehouse_id: int
+    warehouse_code: str
+    warehouse_name: str
+    product_id: int
+    sku: str
+    product_name: str
+    barcode: str | None = None
+    specification: str | None = None
+    unit: str
+    cost_price: float
+    image_url: str | None = None
+    quantity: int
+    locked_quantity: int
+    available_quantity: int
+    warning_quantity: int
+    is_low_stock: bool
+    updated_at: datetime | None = None
+
+
+class WarehouseOrderLinePayload(BaseModel):
+    product_id: int = Field(..., ge=1)
+    quantity: int = Field(..., ge=1)
+
+
+class WarehouseOrderLineResponse(BaseModel):
+    product_id: int
+    sku: str
+    product_name: str
+    specification: str | None = None
+    unit: str
+    image_url: str | None = None
+    quantity: int
+
+
+class WarehouseInboundOrderCreate(BaseModel):
+    warehouse_id: int = Field(..., ge=1)
+    source_type: Literal["purchase", "return", "other"] = "purchase"
+    supplier: str | None = Field(default=None, max_length=100)
+    remark: str | None = None
+    items: list[WarehouseOrderLinePayload] = Field(..., min_length=1)
+
+
+class WarehouseInboundOrderResponse(BaseModel):
+    id: int
+    order_no: str
+    warehouse_id: int
+    warehouse_name: str
+    source_type: str
+    supplier: str | None = None
+    status: str
+    remark: str | None = None
+    operator_username: str | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    items: list[WarehouseOrderLineResponse]
+
+
+class WarehouseOutboundOrderCreate(BaseModel):
+    warehouse_id: int = Field(..., ge=1)
+    external_order_no: str | None = Field(default=None, max_length=100)
+    delivery_method: Literal["shipping", "pickup"] = "shipping"
+    recipient_name: str | None = Field(default=None, max_length=50)
+    recipient_phone: str | None = Field(default=None, max_length=30)
+    recipient_address: str | None = Field(default=None, max_length=500)
+    carrier: str | None = Field(default=None, max_length=50)
+    tracking_no: str | None = Field(default=None, max_length=100)
+    remark: str | None = None
+    items: list[WarehouseOrderLinePayload] = Field(..., min_length=1)
+
+
+class WarehouseOutboundStatusUpdate(BaseModel):
+    status: Literal["pending", "picking", "checked", "packed", "shipped", "cancelled"]
+    carrier: str | None = Field(default=None, max_length=50)
+    tracking_no: str | None = Field(default=None, max_length=100)
+
+
+class WarehouseOutboundOrderResponse(BaseModel):
+    id: int
+    order_no: str
+    warehouse_id: int
+    warehouse_name: str
+    external_order_no: str | None = None
+    delivery_method: Literal["shipping", "pickup"] = "shipping"
+    recipient_name: str | None = None
+    recipient_phone: str | None = None
+    recipient_address: str | None = None
+    carrier: str | None = None
+    tracking_no: str | None = None
+    status: str
+    remark: str | None = None
+    operator_username: str | None = None
+    shipped_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    items: list[WarehouseOrderLineResponse]
+
+
+class WarehouseStockMovementResponse(BaseModel):
+    id: int
+    warehouse_id: int
+    warehouse_name: str
+    product_id: int
+    sku: str
+    product_name: str
+    movement_type: str
+    quantity_change: int
+    quantity_after: int
+    reference_type: str
+    reference_id: int
+    reference_no: str
+    operator_username: str | None = None
+    remark: str | None = None
+    created_at: datetime
+
+
+class WarehouseSummaryResponse(BaseModel):
+    warehouse_count: int
+    product_count: int
+    total_quantity: int
+    total_cost: float
+    low_stock_count: int
+    pending_outbound_count: int
+    today_inbound_quantity: int
+    today_outbound_quantity: int

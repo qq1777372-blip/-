@@ -24,7 +24,6 @@ const sortOrder = ref<'ascending' | 'descending' | null>(null)
 const canManageSoftwareUsers = computed(() => authStore.currentUser?.role === 'superadmin')
 const pageSize = computed(() => 20)
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 300))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 260))
 
 const activatedCount = computed(() => users.value.filter((user) => user.is_activated).length)
 const inactiveCount = computed(() => users.value.filter((user) => !user.is_active).length)
@@ -209,7 +208,6 @@ onMounted(() => {
           <div
             v-loading="loading"
             class="software-user-card-list fixed-list-mobile"
-            :style="{ maxHeight: `${mobileListHeight}px` }"
           >
             <article v-for="user in paginatedUsers" :key="user.id" class="software-user-card">
               <div class="software-user-card__head">

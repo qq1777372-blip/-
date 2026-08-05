@@ -3,8 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>RuoShop Admin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>内部管理系统</title>
+    <script>
+      (() => {
+        const ua = navigator.userAgent || "";
+        const params = new URLSearchParams(location.search);
+        const appClient = params.get("app") === "1" || (/iPhone|iPad|iPod/i.test(ua) && /AppleWebKit/i.test(ua) && !/Safari\//i.test(ua)) || matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true || Boolean(window.XiaoXuApp) || Boolean(window.webkit?.messageHandlers?.xiaoxuApp);
+        if (!appClient) return;
+        const route = location.pathname.replace(/^\/ui/, "") || "/dashboard";
+        const groups = {
+          authorization: ["/license-keys", "/software-users"],
+          bookkeeping: ["/task-bookkeeping/records", "/task-bookkeeping/owners", "/dingtalk-profits"],
+          shop: ["/sycm", "/shop-records", "/peer-shops", "/licenses", "/account-usage", "/mobile-devices"],
+          warehouse: ["/warehouse/stock", "/warehouse/inbound", "/warehouse/outbound", "/warehouse/movements", "/warehouse/master-data"],
+          system: ["/admin-permissions", "/audit-logs", "/system-settings"]
+        };
+        const group = Object.entries(groups).find(([, routes]) => routes.includes(route))?.[0];
+        document.documentElement.classList.add("app-client-mode", "app-redesign");
+        if (group) document.documentElement.classList.add("app-module-route", `app-module-${group}`);
+        if (group && group !== "warehouse") document.documentElement.classList.add("app-route-pending");
+      })();
+    </script>
+    <script defer src="/ui/knowledge-menu.js?v=20260804-sycm1"></script>
+    <script defer src="/ui/company-expense-entry.js?v=20260804-sycm1"></script>
+    <link rel="stylesheet" href="/ui/app-mobile-shell.css?v=20260804-sycm1" />
+    <script defer src="/ui/app-mobile-shell.js?v=20260804-sycm1"></script>
+    <script defer src="/ui/night-mode.js?v=20260804-sycm1"></script>
+    <script defer src="/ui/sycm-sync-button.js?v=20260805-dashboard19"></script>
   </head>
   <body>
     <div id="app"></div>

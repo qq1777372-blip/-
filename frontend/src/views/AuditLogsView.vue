@@ -65,7 +65,6 @@ const statusDisplay = computed(() => {
 })
 
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 360))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 300))
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (axios.isAxiosError(error)) {
@@ -195,7 +194,6 @@ onMounted(loadData)
         <div
           v-loading="loading"
           class="audit-card-list fixed-list-mobile"
-          :style="{ maxHeight: `${mobileListHeight}px` }"
         >
           <template v-if="filteredRecords.length">
             <article v-for="record in paginatedRecords" :key="record.id" class="audit-mobile-card">

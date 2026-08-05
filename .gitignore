@@ -17,3 +17,9 @@ app/**/*.bak-*
 app/**/*.pre-*
 app/**/*.rollback-*
 .idea/
+
+# local-only scratch: live backend snapshot and runtime script staging
+_live_backend_snapshot_*/
+_sycm_runtime_work/
+_server_sycm_sync_button_*.js
+*.before-*.db

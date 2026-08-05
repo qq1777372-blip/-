@@ -62,6 +62,7 @@ class Settings:
     dingtalk_robot_webhook: str
     dingtalk_robot_secret: str
     public_app_base_url: str
+    auth_encryption_key: str
 
     @property
     def is_sqlite(self) -> bool:
@@ -104,6 +105,7 @@ def get_settings() -> Settings:
         dingtalk_robot_webhook=os.getenv("DINGTALK_ROBOT_WEBHOOK", "").strip(),
         dingtalk_robot_secret=os.getenv("DINGTALK_ROBOT_SECRET", "").strip(),
         public_app_base_url=os.getenv("PUBLIC_APP_BASE_URL", "https://xiaoxu666.asia").strip().rstrip("/"),
+        auth_encryption_key=os.getenv("AUTH_ENCRYPTION_KEY", "development-only-auth-key").strip(),
     )
 
 

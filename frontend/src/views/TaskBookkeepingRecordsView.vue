@@ -78,12 +78,10 @@ const form = reactive({
 })
 
 const canEditRecords = computed(() => {
-  const role = authStore.currentUser?.role
-  return role === 'editor' || role === 'superadmin'
+  return authStore.canWrite('task_bookkeeping')
 })
 
 const desktopTableHeight = computed(() => Math.max(380, viewportHeight.value - 540))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 320))
 const pageSize = computed(() => 20)
 
 const signedStatusOptions = [
@@ -654,6 +652,7 @@ onMounted(() => {
             :type="advancedFiltersActive ? 'primary' : undefined"
             @click="toggleFiltersExpanded"
           >
+            <span class="filter-expand-label">更多筛选</span>
             <el-icon><component :is="filtersExpanded ? ArrowUp : ArrowDown" /></el-icon>
           </el-button>
         </div>
@@ -843,7 +842,7 @@ onMounted(() => {
       </div>
 
       <div v-else class="table-area fixed-list-shell">
-        <div v-loading="loading" class="task-mobile-list fixed-list-mobile" :style="{ maxHeight: `${mobileListHeight}px` }">
+        <div v-loading="loading" class="task-mobile-list fixed-list-mobile">
           <template v-if="paginatedRecords.length">
             <article
               v-for="record in paginatedRecords"
@@ -1105,6 +1104,10 @@ onMounted(() => {
   padding: 0;
 }
 
+.filter-expand-label {
+  display: none;
+}
+
 .task-filter-advanced-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1312,9 +1315,42 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
+  .task-filter-shell {
+    padding: 14px;
+  }
+
+  .task-filter-head {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .task-filter-head .section-desc {
+    display: none;
+  }
+
+  .task-filter-meta {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .task-filter-meta::-webkit-scrollbar {
+    display: none;
+  }
+
+  .filter-meta-chip {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 0 10px;
+  }
+
   .task-filter-compact-row,
   .task-filter-advanced-grid {
     grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .filter-compact-keyword {
@@ -1322,7 +1358,13 @@ onMounted(() => {
   }
 
   .filter-expand-button {
-    justify-self: end;
+    width: 100%;
+    justify-self: stretch;
+    gap: 6px;
+  }
+
+  .filter-expand-label {
+    display: inline;
   }
 
   .task-mobile-card__grid,

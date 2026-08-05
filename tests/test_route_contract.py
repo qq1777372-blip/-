@@ -11,6 +11,7 @@ class RouteContractTests(unittest.TestCase):
         self.assertEqual(paths.count("/dashboard/server-status"), 1)
         self.assertEqual(paths.count("/health/live"), 1)
         self.assertEqual(paths.count("/health/ready"), 1)
+        self.assertEqual(paths.count("/warehouse/summary"), 1)
 
 
 if __name__ == "__main__":

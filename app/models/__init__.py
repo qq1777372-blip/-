@@ -15,6 +15,14 @@ from .entities import (
     TaskBookkeepingOwner,
     TaskBookkeepingRecord,
     TaskBookkeepingShop,
+    Warehouse,
+    WarehouseInboundItem,
+    WarehouseInboundOrder,
+    WarehouseOutboundItem,
+    WarehouseOutboundOrder,
+    WarehouseProduct,
+    WarehouseStock,
+    WarehouseStockMovement,
 )
 
 __all__ = [
@@ -34,4 +42,12 @@ __all__ = [
     "AdminSession",
     "LoginAttempt",
     "SavedLink",
+    "Warehouse",
+    "WarehouseProduct",
+    "WarehouseStock",
+    "WarehouseInboundOrder",
+    "WarehouseInboundItem",
+    "WarehouseOutboundOrder",
+    "WarehouseOutboundItem",
+    "WarehouseStockMovement",
 ]

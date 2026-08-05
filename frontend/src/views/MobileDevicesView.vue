@@ -54,15 +54,14 @@ const form = reactive({
   primary_card: '',
   secondary_card: '',
   remark: '',
+  extra_fields: {} as Record<string, string>,
 })
 
 const canEditRecords = computed(() => {
-  const role = authStore.currentUser?.role
-  return role === 'editor' || role === 'superadmin'
+  return authStore.canWrite('mobile_devices')
 })
 
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 360))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 300))
 const pageSize = computed(() => 20)
 
 const filteredRecords = computed(() => {
@@ -77,6 +76,7 @@ const filteredRecords = computed(() => {
       record.primary_card ?? '',
       record.secondary_card ?? '',
       record.remark ?? '',
+      ...Object.values(record.extra_fields ?? {}),
     ]
       .join(' ')
       .toLowerCase()
@@ -117,6 +117,7 @@ function resetForm() {
   form.primary_card = ''
   form.secondary_card = ''
   form.remark = ''
+  form.extra_fields = {}
 }
 
 function openCreateDialog() {
@@ -131,6 +132,7 @@ function openEditDialog(record: MobileDeviceRecord) {
   form.primary_card = record.primary_card ?? ''
   form.secondary_card = record.secondary_card ?? ''
   form.remark = record.remark ?? ''
+  form.extra_fields = Object.fromEntries(Object.entries(record.extra_fields ?? {}).map(([key, value]) => [key, String(value ?? '')]))
   dialogVisible.value = true
 }
 
@@ -140,6 +142,7 @@ function buildPayload() {
     primary_card: form.primary_card.trim() || null,
     secondary_card: form.secondary_card.trim() || null,
     remark: form.remark.trim() || null,
+    extra_fields: { ...form.extra_fields },
   }
 }
 
@@ -365,7 +368,7 @@ onMounted(loadData)
             sortable
           >
             <template #default="{ row }">
-              {{ column.key === 'created_at' ? formatDateTime(row.created_at) : (row[column.key as keyof MobileDeviceRecord] ?? '-') }}
+              {{ column.custom ? (row.extra_fields?.[column.key] ?? '-') : column.key === 'created_at' ? formatDateTime(row.created_at) : (row[column.key as keyof MobileDeviceRecord] ?? '-') }}
             </template>
           </el-table-column>
           <el-table-column v-if="canEditRecords" label="操作" width="160" fixed="right">
@@ -387,7 +390,7 @@ onMounted(loadData)
       </div>
 
       <div v-else class="table-area fixed-list-shell">
-        <div v-loading="loading" class="account-card-list fixed-list-mobile" :style="{ maxHeight: `${mobileListHeight}px` }">
+        <div v-loading="loading" class="account-card-list fixed-list-mobile">
           <template v-if="paginatedRecords.length">
             <article
               v-for="record in paginatedRecords"
@@ -479,6 +482,11 @@ onMounted(loadData)
                 :rows="4"
                 placeholder="记录设备用途、归属人、套餐说明或其它补充信息"
               />
+            </el-form-item>
+          </el-col>
+          <el-col v-for="column in tableColumns.filter((item) => item.custom)" :key="column.key" :span="12">
+            <el-form-item :label="column.label">
+              <el-input v-model="form.extra_fields[column.key]" :placeholder="`请输入${column.label}`" />
             </el-form-item>
           </el-col>
         </el-row>

@@ -26,13 +26,13 @@ const routes = [
     path: '/article-publisher/new',
     name: 'tutorial-docs-editor-new',
     component: () => import('../views/TutorialDocEditorView.vue'),
-    meta: { title: '文章发布', standalone: true },
+    meta: { title: '文章发布', standalone: true, permission: 'links', writePermission: true },
   },
   {
     path: '/article-publisher/:id/edit',
     name: 'tutorial-docs-editor-edit',
     component: () => import('../views/TutorialDocEditorView.vue'),
-    meta: { title: '编辑文章', standalone: true },
+    meta: { title: '编辑文章', standalone: true, permission: 'links', writePermission: true },
   },
   {
     path: '/',
@@ -43,7 +43,7 @@ const routes = [
         path: 'dashboard',
         name: 'dashboard',
         component: () => import('../views/DashboardView.vue'),
-        meta: { title: '运营工作台', section: '工作台' },
+        meta: { title: '运营工作台', section: '工作台', permission: 'dashboard' },
       },
       {
         path: 'server-status',
@@ -53,16 +53,28 @@ const routes = [
         meta: { title: '服务器运行', section: '系统运维' },
       },
       {
+        path: 'system-settings',
+        name: 'system-settings',
+        component: () => import('../views/SystemSettingsView.vue'),
+        meta: { title: '系统设置中心', section: '系统管理', superadminOnly: true },
+      },
+      {
+        path: 'admin-permissions',
+        name: 'admin-permissions',
+        component: () => import('../views/AdminPermissionsView.vue'),
+        meta: { title: '账号与权限', section: '系统管理', superadminOnly: true },
+      },
+      {
         path: 'global-search',
         name: 'global-search',
         component: () => import('../views/GlobalSearchView.vue'),
-        meta: { title: '全局搜索', section: '工作台' },
+        meta: { title: '全局搜索', section: '工作台', permission: 'dashboard' },
       },
       {
         path: 'links',
         name: 'links',
         component: () => import('../views/SavedLinksView.vue'),
-        meta: { title: '链接广场', section: '工具' },
+        meta: { title: '链接广场', section: '工具', permission: 'links' },
       },
       {
         path: 'links/:id',
@@ -117,49 +129,88 @@ const routes = [
         path: 'task-bookkeeping/records',
         name: 'task-bookkeeping-records',
         component: () => import('../views/TaskBookkeepingRecordsView.vue'),
-        meta: { title: '任务记录', section: '任务记账' },
+        meta: { title: '任务记录', section: '任务记账', permission: 'task_bookkeeping' },
       },
       {
         path: 'task-bookkeeping/owners',
         name: 'task-bookkeeping-owners',
         component: () => import('../views/TaskBookkeepingOwnersView.vue'),
-        meta: { title: '负责人管理', section: '任务记账' },
+        meta: { title: '负责人管理', section: '任务记账', permission: 'task_bookkeeping' },
       },
       {
         path: 'dingtalk-profits',
         name: 'dingtalk-profits',
         component: () => import('../views/DingTalkProfitsView.vue'),
-        meta: { title: '钉钉利润', section: '利润中心' },
+        meta: { title: '钉钉利润', section: '利润中心', permission: 'dingtalk_profits' },
+      },
+      {
+        path: 'warehouse',
+        name: 'warehouse',
+        redirect: { name: 'warehouse-stock' },
+      },
+      {
+        path: 'warehouse/stock', name: 'warehouse-stock', component: () => import('../views/WarehouseView.vue'), props: { mode: 'stock' },
+        meta: { title: '库存总览', section: '仓储管理', permission: 'warehouse' },
+      },
+      {
+        path: 'warehouse/inbound', name: 'warehouse-inbound', component: () => import('../views/WarehouseView.vue'), props: { mode: 'inbound' },
+        meta: { title: '入库管理', section: '仓储管理', permission: 'warehouse' },
+      },
+      {
+        path: 'warehouse/outbound', name: 'warehouse-outbound', component: () => import('../views/WarehouseView.vue'), props: { mode: 'outbound' },
+        meta: { title: '出库发货', section: '仓储管理', permission: 'warehouse' },
+      },
+      {
+        path: 'warehouse/movements', name: 'warehouse-movements', component: () => import('../views/WarehouseView.vue'), props: { mode: 'movement' },
+        meta: { title: '库存流水', section: '仓储管理', permission: 'warehouse' },
+      },
+      {
+        path: 'warehouse/master-data', name: 'warehouse-master-data', component: () => import('../views/WarehouseView.vue'), props: { mode: 'master' },
+        meta: { title: '基础资料', section: '仓储管理', permission: 'warehouse' },
+      },
+      {
+        path: 'warehouse/products', name: 'warehouse-products', component: () => import('../views/WarehouseView.vue'), props: { mode: 'products' },
+        meta: { title: '商品档案', section: '仓储管理', permission: 'warehouse' },
+      },
+      {
+        path: 'warehouse/warehouses', name: 'warehouse-warehouses', component: () => import('../views/WarehouseView.vue'), props: { mode: 'warehouses' },
+        meta: { title: '仓库管理', section: '仓储管理', permission: 'warehouse' },
+      },
+      {
+        path: 'sycm',
+        name: 'sycm',
+        component: () => import('../views/SycmView.vue'),
+        meta: { title: '生意参谋', section: '店铺管理', permission: 'shop_records' },
       },
       {
         path: 'shop-records',
         name: 'shop-records',
         component: () => import('../views/ShopRecordsView.vue'),
-        meta: { title: '店铺账号管理', section: '店铺管理' },
+        meta: { title: '店铺账号管理', section: '店铺管理', permission: 'shop_records' },
       },
       {
         path: 'peer-shops',
         name: 'peer-shops',
         component: () => import('../views/PeerShopsView.vue'),
-        meta: { title: '同行店铺', section: '店铺管理' },
+        meta: { title: '同行店铺', section: '店铺管理', permission: 'peer_shops' },
       },
       {
         path: 'licenses',
         name: 'licenses',
         component: () => import('../views/LicensesView.vue'),
-        meta: { title: '执照档案', section: '店铺管理' },
+        meta: { title: '执照档案', section: '店铺管理', permission: 'licenses' },
       },
       {
         path: 'account-usage',
         name: 'account-usage',
         component: () => import('../views/AccountUsageView.vue'),
-        meta: { title: '账号使用记录', section: '店铺管理' },
+        meta: { title: '账号使用记录', section: '店铺管理', permission: 'account_usage' },
       },
       {
         path: 'mobile-devices',
         name: 'mobile-devices',
         component: () => import('../views/MobileDevicesView.vue'),
-        meta: { title: '手机设备', section: '店铺管理' },
+        meta: { title: '手机设备', section: '店铺管理', permission: 'mobile_devices' },
       },
       {
         path: 'license-keys',
@@ -207,6 +258,20 @@ router.beforeEach(async (to) => {
     return {
       name: 'login',
       query: { redirect: to.fullPath },
+    }
+  }
+
+  if (to.meta.superadminOnly && authStore.currentUser.role !== 'superadmin') {
+    return { name: 'dashboard' }
+  }
+
+  const permission = to.meta.permission
+  if (typeof permission === 'string') {
+    if (!authStore.canAccess(permission as import('../types/api').PermissionModule)) {
+      return { name: 'dashboard' }
+    }
+    if (to.meta.writePermission && !authStore.canWrite(permission as import('../types/api').PermissionModule)) {
+      return { name: 'links' }
     }
   }
 

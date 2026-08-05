@@ -85,15 +85,14 @@ const form = reactive({
   usage_notes: '',
   is_banned: false,
   banned_reason: '',
+  extra_fields: {} as Record<string, string>,
 })
 
 const canEditRecords = computed(() => {
-  const role = authStore.currentUser?.role
-  return role === 'editor' || role === 'superadmin'
+  return authStore.canWrite('account_usage')
 })
 
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 360))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 300))
 const pageSize = computed(() => 20)
 
 const filteredRecords = computed(() => {
@@ -109,6 +108,7 @@ const filteredRecords = computed(() => {
       record.device_name ?? '',
       record.usage_notes ?? '',
       record.banned_reason ?? '',
+      ...Object.values(record.extra_fields ?? {}),
     ]
       .join(' ')
       .toLowerCase()
@@ -165,6 +165,7 @@ function resetForm() {
   form.usage_notes = ''
   form.is_banned = false
   form.banned_reason = ''
+  form.extra_fields = {}
 }
 
 function openCreateDialog() {
@@ -184,6 +185,7 @@ async function openEditDialog(record: AccountUsageRecord) {
     form.usage_notes = fullRecord.usage_notes ?? ''
     form.is_banned = fullRecord.is_banned
     form.banned_reason = fullRecord.banned_reason ?? ''
+    form.extra_fields = Object.fromEntries(Object.entries(fullRecord.extra_fields ?? {}).map(([key, value]) => [key, String(value ?? '')]))
     dialogVisible.value = true
   } catch (error) {
     ElMessage.error(getErrorMessage(error, '加载账号记录详情失败'))
@@ -199,6 +201,7 @@ function buildPayload() {
     usage_notes: form.usage_notes.trim() || null,
     is_banned: form.is_banned,
     banned_reason: form.banned_reason.trim() || null,
+    extra_fields: { ...form.extra_fields },
   }
 }
 
@@ -518,6 +521,7 @@ onMounted(loadData)
                 {{ row.is_banned ? '已被封' : '正常' }}
               </el-tag>
               <span v-else-if="column.key === 'created_at'">{{ formatDateTime(row.created_at) }}</span>
+              <span v-else-if="column.custom">{{ row.extra_fields?.[column.key] ?? '-' }}</span>
               <span v-else>{{ row[column.key as keyof AccountUsageRecord] ?? '-' }}</span>
             </template>
           </el-table-column>
@@ -540,7 +544,7 @@ onMounted(loadData)
       </div>
 
       <div v-else class="table-area fixed-list-shell">
-        <div v-loading="loading" class="account-card-list fixed-list-mobile" :style="{ maxHeight: `${mobileListHeight}px` }">
+        <div v-loading="loading" class="account-card-list fixed-list-mobile">
           <template v-if="paginatedRecords.length">
             <article
               v-for="record in paginatedRecords"
@@ -706,6 +710,11 @@ onMounted(loadData)
           <el-col :span="12">
             <el-form-item label="封禁备注">
               <el-input v-model="form.banned_reason" placeholder="如果被封，可记录原因或处理结果" />
+            </el-form-item>
+          </el-col>
+          <el-col v-for="column in tableColumns.filter((item) => item.custom)" :key="column.key" :span="12">
+            <el-form-item :label="column.label">
+              <el-input v-model="form.extra_fields[column.key]" :placeholder="`请输入${column.label}`" />
             </el-form-item>
           </el-col>
         </el-row>

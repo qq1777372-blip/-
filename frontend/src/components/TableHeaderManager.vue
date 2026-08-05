@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowUp, Hide, Setting, View } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Delete, Hide, Plus, Setting, View } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { ref } from 'vue'
 
 export interface ManagedTableColumn {
   key: string
   label: string
   minWidth: number
   visible: boolean
+  custom?: boolean
 }
 
 const props = defineProps<{ columns: ManagedTableColumn[] }>()
@@ -15,6 +18,22 @@ const emit = defineEmits<{
 }>()
 
 const dialogVisible = defineModel<boolean>('visible', { default: false })
+const createDialogVisible = ref(false)
+const newColumnLabel = ref('')
+
+function addColumn() {
+  const label = newColumnLabel.value.trim()
+  if (!label) return ElMessage.warning('请输入表头名称')
+  const columns = [...props.columns, { key: `custom_${Date.now()}`, label, minWidth: 180, visible: true, custom: true }]
+  update(columns)
+  newColumnLabel.value = ''
+  createDialogVisible.value = false
+}
+
+function remove(index: number) {
+  if (!props.columns[index]?.custom) return
+  update(props.columns.filter((_, current) => current !== index).map((column) => ({ ...column })))
+}
 
 function update(columns: ManagedTableColumn[], save = true) {
   emit('update:columns', columns)
@@ -48,6 +67,13 @@ function resize(index: number, value: number | undefined, save: boolean) {
 <template>
   <el-button type="success" plain :icon="Setting" @click="dialogVisible = true">表头管理</el-button>
   <el-dialog v-model="dialogVisible" title="表头管理" width="760px" destroy-on-close>
+    <div class="table-header-manager-head">
+      <div>
+        <strong>当前表头</strong>
+        <span>调整显示状态、排列顺序和列宽，共 {{ columns.length }} 项。</span>
+      </div>
+      <el-button type="primary" :icon="Plus" @click="createDialogVisible = true">新增表头</el-button>
+    </div>
     <div class="managed-column-scroll">
       <div v-for="(column, index) in columns" :key="column.key" class="managed-column-card">
         <div class="managed-column-name">
@@ -69,15 +95,31 @@ function resize(index: number, value: number | undefined, save: boolean) {
           <el-button :icon="ArrowUp" :disabled="index === 0" @click="move(index, -1)">上移</el-button>
           <el-button :icon="ArrowDown" :disabled="index === columns.length - 1" @click="move(index, 1)">下移</el-button>
           <el-button :icon="column.visible ? Hide : View" @click="toggle(index)">{{ column.visible ? '隐藏' : '显示' }}</el-button>
+          <el-button v-if="column.custom" type="danger" plain :icon="Delete" @click="remove(index)">删除</el-button>
         </div>
       </div>
     </div>
     <template #footer><el-button type="primary" @click="dialogVisible = false">完成</el-button></template>
   </el-dialog>
+  <el-dialog v-model="createDialogVisible" title="新增表头" width="440px" destroy-on-close append-to-body>
+    <el-form label-position="top" @submit.prevent>
+      <el-form-item label="表头名称" required>
+        <el-input v-model="newColumnLabel" maxlength="30" show-word-limit placeholder="例如：负责人" @keyup.enter="addColumn" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="createDialogVisible = false">取消</el-button>
+      <el-button type="primary" @click="addColumn">确认新增</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
 .managed-column-scroll { display: grid; gap: 12px; max-height: 480px; padding-right: 6px; overflow-y: auto; scrollbar-width: thin; }
+.table-header-manager-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.table-header-manager-head > div { display: grid; gap: 4px; }
+.table-header-manager-head strong { color: var(--text-primary); font-size: 15px; }
+.table-header-manager-head span { color: var(--text-secondary); font-size: 12px; }
 .managed-column-card { display: grid; gap: 14px; padding: 14px 16px; border: 1px solid var(--panel-border); border-radius: 8px; background: #f8fafc; }
 .managed-column-name { display: flex; justify-content: space-between; gap: 12px; }
 .managed-column-name small { color: var(--text-secondary); }

@@ -69,6 +69,7 @@ const shopColumnWidths = ref<Record<string, number>>(loadShopColumnWidths())
 
 const recordDialogVisible = ref(false)
 const fieldDialogVisible = ref(false)
+const fieldCreateDialogVisible = ref(false)
 const editingRecordId = ref<number | null>(null)
 const sortState = ref<{ prop: string; order: 'ascending' | 'descending' } | null>(null)
 
@@ -173,14 +174,12 @@ const depositSummary = computed(() => {
 })
 
 const canEditRecords = computed(() => {
-  const role = authStore.currentUser?.role
-  return role === 'editor' || role === 'superadmin'
+  return authStore.canWrite('shop_records')
 })
 
 const canManageFields = computed(() => authStore.currentUser?.role === 'superadmin')
 
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 420))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 320))
 const pageSize = computed(() => 20)
 
 const statusDisplay = computed(() => {
@@ -467,6 +466,7 @@ async function submitField() {
     ElMessage.success('表头新增成功')
     resetFieldForm()
     await loadData('正在刷新字段配置...')
+    fieldCreateDialogVisible.value = false
   } catch (error) {
     ElMessage.error(getErrorMessage(error, '新增表头失败'))
   } finally {
@@ -550,7 +550,7 @@ watch(recordDialogVisible, (visible) => {
   }
 })
 
-watch(fieldDialogVisible, (visible) => {
+watch(fieldCreateDialogVisible, (visible) => {
   if (!visible) {
     resetFieldForm()
   }
@@ -704,7 +704,7 @@ onMounted(() => {
       </div>
 
       <div v-else class="table-area fixed-list-shell">
-        <div v-loading="loading" class="shop-card-list fixed-list-mobile" :style="{ maxHeight: `${mobileListHeight}px` }">
+        <div v-loading="loading" class="shop-card-list fixed-list-mobile">
           <template v-if="paginatedRecords.length">
             <article
               v-for="record in paginatedRecords"
@@ -811,53 +811,16 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="fieldDialogVisible" title="表头管理" width="780px" destroy-on-close>
-      <div class="page-stack">
-        <el-form label-position="top">
-          <el-row :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="表头名称" required>
-                <el-input v-model="fieldForm.label" placeholder="例如：保证金" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="字段标识">
-                <el-input v-model="fieldForm.field_name" placeholder="可选，例如：deposit_amount" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="字段类型">
-                <el-select v-model="fieldForm.field_type" style="width: 100%">
-                  <el-option label="文本" value="text" />
-                  <el-option label="数字" value="number" />
-                  <el-option label="日期" value="date" />
-                </el-select>
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="字段设置">
-                <el-checkbox v-model="fieldForm.required">必填字段</el-checkbox>
-              </el-form-item>
-            </el-col>
-          </el-row>
-        </el-form>
-
-        <div class="toolbar-actions">
-          <el-button type="primary" :icon="Plus" :loading="fieldSubmitLoading" @click="submitField">
-            新增表头
-          </el-button>
+    <el-dialog v-model="fieldDialogVisible" title="表头管理" width="760px" destroy-on-close>
+      <div class="table-header-manager-head">
+        <div>
+          <strong>当前表头</strong>
+          <span>调整显示状态、排列顺序和列宽，共 {{ orderedFields.length }} 项。</span>
         </div>
+        <el-button type="primary" :icon="Plus" @click="fieldCreateDialogVisible = true">新增表头</el-button>
+      </div>
 
-        <el-card shadow="never">
-          <template #header>
-            <div>
-              <h3 class="section-title" style="font-size: 16px">当前字段</h3>
-              <p class="section-desc">删除表头会影响全部台账记录，请谨慎操作。</p>
-            </div>
-          </template>
-
-          <div v-if="orderedFields.length">
-            <div class="section-desc" style="margin-bottom: 8px">上下滚动管理全部表头</div>
+      <div v-if="orderedFields.length">
             <div class="field-cards-scroll">
               <div v-for="field in orderedFields" :key="field.id" class="field-manager-panel">
               <div style="min-width: 0">
@@ -917,14 +880,46 @@ onMounted(() => {
               </div>
               </div>
             </div>
-          </div>
-
-          <el-empty v-else description="当前没有字段" />
-        </el-card>
       </div>
+      <el-empty v-else description="当前没有字段" />
 
       <template #footer>
-        <el-button @click="fieldDialogVisible = false">关闭</el-button>
+        <el-button type="primary" @click="fieldDialogVisible = false">完成</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="fieldCreateDialogVisible" title="新增表头" width="520px" destroy-on-close append-to-body>
+      <el-form label-position="top">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="表头名称" required>
+              <el-input v-model="fieldForm.label" placeholder="例如：保证金" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="字段标识">
+              <el-input v-model="fieldForm.field_name" placeholder="可选，例如：deposit_amount" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="字段类型">
+              <el-select v-model="fieldForm.field_type" style="width: 100%">
+                <el-option label="文本" value="text" />
+                <el-option label="数字" value="number" />
+                <el-option label="日期" value="date" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="字段设置">
+              <el-checkbox v-model="fieldForm.required">必填字段</el-checkbox>
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+      <template #footer>
+        <el-button @click="fieldCreateDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="fieldSubmitLoading" @click="submitField">确认新增</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1013,6 +1008,29 @@ onMounted(() => {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.table-header-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.table-header-manager-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.table-header-manager-head strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.table-header-manager-head span {
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .field-manager-panel {

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import {
   ArrowDown,
+  Bell,
+  Box,
   Cellphone,
   Document,
   Fold,
@@ -15,15 +17,18 @@ import {
   Tickets,
   TrendCharts,
   User,
+  UserFilled,
 } from '@element-plus/icons-vue'
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AdminManageDialog from '../components/AdminManageDialog.vue'
+import { fetchSystemAlerts } from '../api'
 import ChangePasswordDialog from '../components/ChangePasswordDialog.vue'
 import EditProfileDialog from '../components/EditProfileDialog.vue'
 import SessionManageDialog from '../components/SessionManageDialog.vue'
+import TotpSecurityDialog from '../components/TotpSecurityDialog.vue'
 import { useViewport } from '../composables/useViewport'
 import { useAuthStore } from '../stores/auth'
+import type { SystemAlertItem } from '../types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,13 +37,84 @@ const { isTablet } = useViewport()
 
 const passwordDialogVisible = ref(false)
 const profileDialogVisible = ref(false)
-const adminDialogVisible = ref(false)
 const sessionDialogVisible = ref(false)
+const totpDialogVisible = ref(false)
 const mobileMenuVisible = ref(false)
 const desktopSidebarCollapsed = ref(false)
-const webVersion = '2026.07.26.18'
+const webVersion = '2026.07.28.19'
+const openAlertCount = ref(0)
+const unreadAlertCount = ref(0)
+const alertPreview = ref<SystemAlertItem[]>([])
+const alertPopoverVisible = ref(false)
+const showAllAlerts = ref(false)
+const alertUpdatedAt = ref('')
+
+interface AlertGroup {
+  category: SystemAlertItem['category']
+  severity: SystemAlertItem['severity']
+  title: string
+  description: string
+  count: number
+  route: string
+}
+
+const alertGroups = computed<AlertGroup[]>(() => {
+  const severityRank = { critical: 3, warning: 2, info: 1 }
+  const groups = new Map<SystemAlertItem['category'], SystemAlertItem[]>()
+  for (const alert of alertPreview.value) {
+    groups.set(alert.category, [...(groups.get(alert.category) ?? []), alert])
+  }
+
+  const titleMap: Record<SystemAlertItem['category'], (count: number) => string> = {
+    inventory: (count) => `${count} 种商品库存异常`,
+    outbound: (count) => `${count} 张出库单待处理`,
+    license: (count) => `${count} 项执照到期提醒`,
+    task: (count) => `${count} 项任务长时间未完成`,
+    security: (count) => `${count} 项登录安全异常`,
+  }
+
+  return [...groups.entries()]
+    .map(([category, items]) => {
+      const sortedItems = [...items].sort((a, b) => severityRank[b.severity] - severityRank[a.severity])
+      const criticalCount = items.filter((item) => item.severity === 'critical').length
+      return {
+        category,
+        severity: sortedItems[0].severity,
+        title: titleMap[category](items.length),
+        description: criticalCount ? `其中 ${criticalCount} 项紧急，点击立即处理` : sortedItems[0].description,
+        count: items.length,
+        route: sortedItems[0].route,
+      }
+    })
+    .sort((a, b) => severityRank[b.severity] - severityRank[a.severity])
+})
 
 const activeMenuPath = computed(() => String(route.meta.activeMenu ?? route.path))
+const defaultOpeneds = computed(() => {
+  const path = activeMenuPath.value
+
+  if (['/license-keys', '/software-users'].includes(path)) {
+    return ['authorization']
+  }
+
+  if (path.startsWith('/task-bookkeeping/')) {
+    return ['task-bookkeeping']
+  }
+
+  if (path.startsWith('/warehouse/')) {
+    return ['warehouse']
+  }
+
+  if (['/audit-logs', '/system-settings'].includes(path)) {
+    return ['system-management']
+  }
+
+  if (['/sycm', '/shop-records', '/peer-shops', '/licenses', '/account-usage', '/mobile-devices'].includes(path)) {
+    return ['store']
+  }
+
+  return []
+})
 const pageTitle = computed(() => String(route.meta.title ?? '后台管理'))
 const pageSection = computed(() => String(route.meta.section ?? '系统'))
 const canManageAdmins = computed(() => authStore.currentUser?.role === 'superadmin')
@@ -67,14 +143,69 @@ async function goToGlobalSearch() {
   await router.push({ name: 'global-search' })
 }
 
+async function refreshAlertCount() {
+  try {
+    const result = await fetchSystemAlerts('', 'open')
+    openAlertCount.value = result.open_count
+    alertPreview.value = result.items
+    const currentKeys = result.items.map((item) => item.key)
+    const seenKeys = readSeenAlertKeys().filter((key) => currentKeys.includes(key))
+    localStorage.setItem(getAlertStorageKey(), JSON.stringify(seenKeys))
+    unreadAlertCount.value = currentKeys.filter((key) => !seenKeys.includes(key)).length
+    alertUpdatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    openAlertCount.value = 0
+    unreadAlertCount.value = 0
+    alertPreview.value = []
+  }
+}
+
+function getAlertStorageKey() {
+  return `ruoshop-seen-alerts:${authStore.currentUser?.username ?? 'anonymous'}`
+}
+
+function readSeenAlertKeys(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(getAlertStorageKey()) ?? '[]')
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+async function handleAlertPopoverShow() {
+  await refreshAlertCount()
+  localStorage.setItem(getAlertStorageKey(), JSON.stringify(alertPreview.value.map((item) => item.key)))
+  unreadAlertCount.value = 0
+}
+
+async function openAlertBusiness(alert: { route: string }) {
+  alertPopoverVisible.value = false
+  if (alert.route) {
+    await router.push(alert.route)
+  }
+}
+
+function getAlertCategoryLabel(category: SystemAlertItem['category']) {
+  return ({ inventory: '库存', outbound: '出库', license: '执照', task: '任务', security: '安全' })[category]
+}
+
+onMounted(refreshAlertCount)
+
+watch(alertPopoverVisible, (visible) => {
+  if (!visible) showAllAlerts.value = false
+})
+
 watch(
   () => route.fullPath,
   () => {
     mobileMenuVisible.value = false
     passwordDialogVisible.value = false
     profileDialogVisible.value = false
-    adminDialogVisible.value = false
     sessionDialogVisible.value = false
+    totpDialogVisible.value = false
+    alertPopoverVisible.value = false
+    void refreshAlertCount()
   },
 )
 
@@ -95,12 +226,17 @@ async function handleUserCommand(command: string | number | object) {
   }
 
   if (command === 'manage-admins') {
-    adminDialogVisible.value = true
+    await router.push({ name: 'admin-permissions' })
     return
   }
 
   if (command === 'manage-sessions') {
     sessionDialogVisible.value = true
+    return
+  }
+
+  if (command === 'totp-security') {
+    totpDialogVisible.value = true
     return
   }
 
@@ -121,14 +257,15 @@ async function handleUserCommand(command: string | number | object) {
       <div class="layout-brand">
         <div class="brand-logo">RS</div>
         <div class="layout-brand-copy">
-          <strong>RuoShop Admin</strong>
+          <strong>内部管理系统</strong>
           <span>任务记账与店铺后台</span>
         </div>
       </div>
 
       <el-menu
         :default-active="activeMenuPath"
-        :default-openeds="['authorization', 'task-bookkeeping', 'store']"
+        :default-openeds="defaultOpeneds"
+        unique-opened
         class="layout-menu"
         router
         :collapse="desktopSidebarCollapsed"
@@ -147,7 +284,12 @@ async function handleUserCommand(command: string | number | object) {
           <span>服务器运行</span>
         </el-menu-item>
 
-        <el-menu-item index="/links">
+        <el-menu-item v-if="canManageAdmins" index="/admin-permissions">
+          <el-icon><UserFilled /></el-icon>
+          <span>账号与权限</span>
+        </el-menu-item>
+
+        <el-menu-item v-if="authStore.canAccess('links')" index="/links">
           <el-icon><LinkIcon /></el-icon>
           <span>链接广场</span>
         </el-menu-item>
@@ -167,7 +309,7 @@ async function handleUserCommand(command: string | number | object) {
           </el-menu-item>
         </el-sub-menu>
 
-        <el-sub-menu index="task-bookkeeping">
+        <el-sub-menu v-if="authStore.canAccess('task_bookkeeping')" index="task-bookkeeping">
           <template #title>
             <el-icon><Tickets /></el-icon>
             <span>任务记账</span>
@@ -182,42 +324,59 @@ async function handleUserCommand(command: string | number | object) {
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item index="/dingtalk-profits">
+        <el-menu-item v-if="authStore.canAccess('dingtalk_profits')" index="/dingtalk-profits">
           <el-icon><TrendCharts /></el-icon>
           <span>钉钉利润</span>
         </el-menu-item>
 
-        <el-sub-menu index="store">
+        <el-sub-menu
+          v-if="authStore.canAccess('shop_records') || authStore.canAccess('peer_shops') || authStore.canAccess('licenses') || authStore.canAccess('account_usage') || authStore.canAccess('mobile_devices')"
+          index="store"
+        >
           <template #title>
             <el-icon><Management /></el-icon>
             <span>店铺管理</span>
           </template>
-          <el-menu-item index="/shop-records">
+          <el-menu-item v-if="authStore.canAccess('shop_records')" index="/sycm">
+            <el-icon><TrendCharts /></el-icon>
+            <span>生意参谋</span>
+          </el-menu-item>
+          <el-menu-item v-if="authStore.canAccess('shop_records')" index="/shop-records">
             <el-icon><Management /></el-icon>
             <span>店铺账号</span>
           </el-menu-item>
-          <el-menu-item index="/peer-shops">
+          <el-menu-item v-if="authStore.canAccess('peer_shops')" index="/peer-shops">
             <el-icon><Management /></el-icon>
             <span>同行店铺</span>
           </el-menu-item>
-          <el-menu-item index="/licenses">
+          <el-menu-item v-if="authStore.canAccess('licenses')" index="/licenses">
             <el-icon><Document /></el-icon>
             <span>执照档案</span>
           </el-menu-item>
-          <el-menu-item index="/account-usage">
+          <el-menu-item v-if="authStore.canAccess('account_usage')" index="/account-usage">
             <el-icon><Cellphone /></el-icon>
             <span>账号使用记录</span>
           </el-menu-item>
-          <el-menu-item index="/mobile-devices">
+          <el-menu-item v-if="authStore.canAccess('mobile_devices')" index="/mobile-devices">
             <el-icon><Cellphone /></el-icon>
             <span>手机设备</span>
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item index="/audit-logs" v-if="canManageAdmins">
-          <el-icon><Setting /></el-icon>
-          <span>安全日志</span>
-        </el-menu-item>
+        <el-sub-menu v-if="authStore.canAccess('warehouse')" index="warehouse">
+          <template #title><el-icon><Box /></el-icon><span>仓储管理</span></template>
+          <el-menu-item index="/warehouse/stock">库存总览</el-menu-item>
+          <el-menu-item index="/warehouse/inbound">入库管理</el-menu-item>
+          <el-menu-item index="/warehouse/outbound">出库发货</el-menu-item>
+          <el-menu-item index="/warehouse/movements">库存流水</el-menu-item>
+          <el-menu-item index="/warehouse/master-data">基础资料</el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu v-if="canManageAdmins" index="system-management">
+          <template #title><el-icon><Setting /></el-icon><span>系统管理</span></template>
+          <el-menu-item index="/audit-logs">安全日志</el-menu-item>
+          <el-menu-item index="/system-settings">系统设置</el-menu-item>
+        </el-sub-menu>
       </el-menu>
 
       <div class="layout-version">Web v{{ webVersion }}</div>
@@ -244,6 +403,93 @@ async function handleUserCommand(command: string | number | object) {
         </div>
 
         <div class="layout-userbar">
+          <el-popover
+            v-model:visible="alertPopoverVisible"
+            placement="bottom-end"
+            trigger="click"
+            :width="380"
+            popper-class="system-alert-popover"
+            @show="handleAlertPopoverShow"
+          >
+            <template #reference>
+              <el-badge :value="unreadAlertCount" :hidden="unreadAlertCount === 0" :max="99" class="header-alert-badge">
+                <button
+                  type="button"
+                  class="header-icon-button"
+                  :class="{ 'header-icon-button--active': alertPopoverVisible }"
+                  aria-label="异常提醒"
+                >
+                  <el-icon><Bell /></el-icon>
+                </button>
+              </el-badge>
+            </template>
+
+            <div class="alert-popover-panel">
+              <div class="alert-popover-header">
+                <div>
+                  <strong>异常提醒</strong>
+                  <span v-if="openAlertCount">{{ alertGroups.length }} 类异常 · {{ openAlertCount }} 项待处理</span>
+                </div>
+                <button type="button" class="alert-popover-close" aria-label="关闭" @click="alertPopoverVisible = false">×</button>
+              </div>
+
+              <div v-if="alertGroups.length && !showAllAlerts" class="alert-popover-list">
+                <button
+                  v-for="alert in alertGroups"
+                  :key="alert.category"
+                  type="button"
+                  class="alert-popover-item"
+                  @click="openAlertBusiness(alert)"
+                >
+                  <span class="alert-popover-item__icon" :class="`alert-popover-item__icon--${alert.severity}`">
+                    <el-icon><Bell /></el-icon>
+                  </span>
+                  <span class="alert-popover-item__content">
+                    <strong>{{ alert.title }}</strong>
+                    <span>{{ alert.description }}</span>
+                  </span>
+                  <span class="alert-popover-item__category">{{ getAlertCategoryLabel(alert.category) }} · {{ alert.count }}</span>
+                </button>
+              </div>
+
+              <div v-else-if="alertPreview.length" class="alert-popover-list alert-popover-list--all">
+                <button
+                  v-for="alert in alertPreview"
+                  :key="alert.key"
+                  type="button"
+                  class="alert-popover-item"
+                  @click="openAlertBusiness(alert)"
+                >
+                  <span class="alert-popover-item__icon" :class="`alert-popover-item__icon--${alert.severity}`">
+                    <el-icon><Bell /></el-icon>
+                  </span>
+                  <span class="alert-popover-item__content">
+                    <strong>{{ alert.title }}</strong>
+                    <span>{{ alert.description }}</span>
+                  </span>
+                  <span class="alert-popover-item__category">{{ getAlertCategoryLabel(alert.category) }}</span>
+                </button>
+              </div>
+
+              <div v-else class="alert-popover-empty">
+                <span class="alert-popover-empty__icon"><el-icon><Bell /></el-icon></span>
+                <strong>暂无异常</strong>
+                <span>当前没有需要处理的异常提醒</span>
+              </div>
+
+              <div v-if="alertUpdatedAt" class="alert-popover-updated">最近更新：{{ alertUpdatedAt }}</div>
+              <button
+                v-if="openAlertCount"
+                type="button"
+                class="alert-popover-footer"
+                @click="showAllAlerts = !showAllAlerts"
+              >
+                {{ showAllAlerts ? '返回分类摘要' : `查看全部（${openAlertCount}）` }}
+              </button>
+
+            </div>
+          </el-popover>
+
           <button
             type="button"
             class="header-shortcut"
@@ -299,6 +545,13 @@ async function handleUserCommand(command: string | number | object) {
                   </span>
                 </el-dropdown-item>
 
+                <el-dropdown-item command="totp-security">
+                  <span class="dropdown-item-label">
+                    <el-icon><Key /></el-icon>
+                    登录二次验证
+                  </span>
+                </el-dropdown-item>
+
                 <el-dropdown-item command="logout" divided>
                   <span class="dropdown-item-label danger-text">
                     <el-icon><SwitchButton /></el-icon>
@@ -310,10 +563,6 @@ async function handleUserCommand(command: string | number | object) {
           </el-dropdown>
         </div>
       </el-header>
-
-      <section v-if="isTablet" class="layout-mobile-toolbar page-block">
-        <div class="section-desc">全局搜索和账户操作都收纳到右上角。</div>
-      </section>
 
       <el-main class="layout-main">
         <router-view v-slot="{ Component }">
@@ -337,14 +586,15 @@ async function handleUserCommand(command: string | number | object) {
       <div class="layout-brand">
         <div class="brand-logo">RS</div>
         <div>
-          <strong>RuoShop Admin</strong>
+          <strong>内部管理系统</strong>
           <span>任务记账与店铺后台</span>
         </div>
       </div>
 
       <el-menu
         :default-active="activeMenuPath"
-        :default-openeds="['authorization', 'task-bookkeeping', 'store']"
+        :default-openeds="defaultOpeneds"
+        unique-opened
         class="layout-menu"
         router
         background-color="transparent"
@@ -362,7 +612,12 @@ async function handleUserCommand(command: string | number | object) {
           <span>服务器运行</span>
         </el-menu-item>
 
-        <el-menu-item index="/links">
+        <el-menu-item v-if="canManageAdmins" index="/admin-permissions">
+          <el-icon><UserFilled /></el-icon>
+          <span>账号与权限</span>
+        </el-menu-item>
+
+        <el-menu-item v-if="authStore.canAccess('links')" index="/links">
           <el-icon><LinkIcon /></el-icon>
           <span>链接广场</span>
         </el-menu-item>
@@ -382,7 +637,7 @@ async function handleUserCommand(command: string | number | object) {
           </el-menu-item>
         </el-sub-menu>
 
-        <el-sub-menu index="task-bookkeeping">
+        <el-sub-menu v-if="authStore.canAccess('task_bookkeeping')" index="task-bookkeeping">
           <template #title>
             <el-icon><Tickets /></el-icon>
             <span>任务记账</span>
@@ -397,50 +652,67 @@ async function handleUserCommand(command: string | number | object) {
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item index="/dingtalk-profits">
+        <el-menu-item v-if="authStore.canAccess('dingtalk_profits')" index="/dingtalk-profits">
           <el-icon><TrendCharts /></el-icon>
           <span>钉钉利润</span>
         </el-menu-item>
 
-        <el-sub-menu index="store">
+        <el-sub-menu
+          v-if="authStore.canAccess('shop_records') || authStore.canAccess('peer_shops') || authStore.canAccess('licenses') || authStore.canAccess('account_usage') || authStore.canAccess('mobile_devices')"
+          index="store"
+        >
           <template #title>
             <el-icon><Management /></el-icon>
             <span>店铺管理</span>
           </template>
-          <el-menu-item index="/shop-records">
+          <el-menu-item v-if="authStore.canAccess('shop_records')" index="/sycm">
+            <el-icon><TrendCharts /></el-icon>
+            <span>生意参谋</span>
+          </el-menu-item>
+          <el-menu-item v-if="authStore.canAccess('shop_records')" index="/shop-records">
             <el-icon><Management /></el-icon>
             <span>店铺账号</span>
           </el-menu-item>
-          <el-menu-item index="/peer-shops">
+          <el-menu-item v-if="authStore.canAccess('peer_shops')" index="/peer-shops">
             <el-icon><Management /></el-icon>
             <span>同行店铺</span>
           </el-menu-item>
-          <el-menu-item index="/licenses">
+          <el-menu-item v-if="authStore.canAccess('licenses')" index="/licenses">
             <el-icon><Document /></el-icon>
             <span>执照档案</span>
           </el-menu-item>
-          <el-menu-item index="/account-usage">
+          <el-menu-item v-if="authStore.canAccess('account_usage')" index="/account-usage">
             <el-icon><Cellphone /></el-icon>
             <span>账号使用记录</span>
           </el-menu-item>
-          <el-menu-item index="/mobile-devices">
+          <el-menu-item v-if="authStore.canAccess('mobile_devices')" index="/mobile-devices">
             <el-icon><Cellphone /></el-icon>
             <span>手机设备</span>
           </el-menu-item>
         </el-sub-menu>
 
-        <el-menu-item index="/audit-logs" v-if="canManageAdmins">
-          <el-icon><Setting /></el-icon>
-          <span>安全日志</span>
-        </el-menu-item>
+        <el-sub-menu v-if="authStore.canAccess('warehouse')" index="warehouse">
+          <template #title><el-icon><Box /></el-icon><span>仓储管理</span></template>
+          <el-menu-item index="/warehouse/stock">库存总览</el-menu-item>
+          <el-menu-item index="/warehouse/inbound">入库管理</el-menu-item>
+          <el-menu-item index="/warehouse/outbound">出库发货</el-menu-item>
+          <el-menu-item index="/warehouse/movements">库存流水</el-menu-item>
+          <el-menu-item index="/warehouse/master-data">基础资料</el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu v-if="canManageAdmins" index="system-management">
+          <template #title><el-icon><Setting /></el-icon><span>系统管理</span></template>
+          <el-menu-item index="/audit-logs">安全日志</el-menu-item>
+          <el-menu-item index="/system-settings">系统设置</el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </div>
   </el-drawer>
 
   <EditProfileDialog v-model="profileDialogVisible" />
   <ChangePasswordDialog v-model="passwordDialogVisible" />
-  <AdminManageDialog v-if="canManageAdmins" v-model="adminDialogVisible" />
   <SessionManageDialog v-model="sessionDialogVisible" />
+  <TotpSecurityDialog v-model="totpDialogVisible" />
 </template>
 
 <style scoped>
@@ -663,6 +935,225 @@ async function handleUserCommand(command: string | number | object) {
   flex-wrap: wrap;
 }
 
+.header-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.header-icon-button:hover {
+  border-color: #d1d5db;
+  background: #f3f4f6;
+}
+
+.header-icon-button--active {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+  color: var(--brand-primary);
+}
+
+.header-icon-button :deep(.el-icon) {
+  font-size: 17px;
+}
+
+.header-alert-badge {
+  display: inline-flex;
+}
+
+.header-alert-badge :deep(.el-badge__content) {
+  top: 3px;
+  right: 6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-width: 2px;
+  font-size: 10px;
+  line-height: 13px;
+}
+
+:global(.system-alert-popover.el-popover) {
+  max-width: calc(100vw - 24px);
+  padding: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.16);
+}
+
+.alert-popover-panel {
+  color: #0f172a;
+}
+
+.alert-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 16px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.alert-popover-header > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.alert-popover-header strong {
+  font-size: 16px;
+}
+
+.alert-popover-header span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.alert-popover-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.alert-popover-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.alert-popover-list--all {
+  max-height: min(480px, 62vh);
+}
+
+.alert-popover-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  border-bottom: 1px solid #eef2f7;
+  background: #ffffff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.alert-popover-item:hover {
+  background: #f8fafc;
+}
+
+.alert-popover-item__icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.alert-popover-item__icon--warning {
+  background: #fff7ed;
+  color: #d97706;
+}
+
+.alert-popover-item__icon--critical {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.alert-popover-item__content {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.alert-popover-item__content strong,
+.alert-popover-item__content span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-popover-item__content strong {
+  font-size: 13px;
+}
+
+.alert-popover-item__content span,
+.alert-popover-item__category {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.alert-popover-item__category {
+  padding-top: 2px;
+  white-space: nowrap;
+}
+
+.alert-popover-empty {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: 34px 20px 30px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.alert-popover-empty strong {
+  color: #334155;
+  font-size: 14px;
+}
+
+.alert-popover-empty__icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+  background: #f1f5f9;
+  color: #94a3b8;
+  font-size: 22px;
+}
+
+.alert-popover-updated {
+  padding: 9px 16px;
+  border-top: 1px solid #eef2f7;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 11px;
+  text-align: right;
+}
+
+.alert-popover-footer {
+  width: 100%;
+  padding: 11px 16px;
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: var(--brand-primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.alert-popover-footer:hover {
+  background: #f8fafc;
+}
+
 .header-shortcut {
   display: inline-flex;
   align-items: center;
@@ -785,26 +1276,44 @@ async function handleUserCommand(command: string | number | object) {
   100% { transform: scale(1); }
 }
 
-.layout-mobile-toolbar {
-  margin: 0 24px 0;
-  padding: 12px 16px;
-}
-
 @media (max-width: 900px) {
   .layout-header {
-    padding: 14px 16px 10px;
+    flex-wrap: nowrap;
+    gap: 8px;
+    min-height: 56px;
+    padding: 8px 12px;
   }
 
   .layout-main {
-    padding: 10px 16px 16px;
-  }
-
-  .layout-mobile-toolbar {
-    margin: 0 16px 0;
+    padding: 10px 12px 16px;
   }
 
   .layout-title {
-    font-size: 24px;
+    overflow: hidden;
+    font-size: 18px;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .layout-breadcrumb {
+    display: none;
+  }
+
+  .header-left {
+    flex: 1 1 auto;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .title-stack {
+    overflow: hidden;
+  }
+
+  .layout-userbar {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 6px;
   }
 
   .header-shortcut span {
@@ -812,9 +1321,29 @@ async function handleUserCommand(command: string | number | object) {
   }
 
   .header-shortcut {
-    min-width: 44px;
+    min-width: 36px;
+    width: 36px;
+    min-height: 36px;
     justify-content: center;
-    padding: 0 12px;
+    padding: 0;
+  }
+
+  .user-chip {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    justify-content: center;
+    padding: 3px;
+  }
+
+  .user-chip .single-line-text,
+  .user-chip-caret {
+    display: none;
+  }
+
+  .user-avatar {
+    width: 28px;
+    height: 28px;
   }
 }
 </style>

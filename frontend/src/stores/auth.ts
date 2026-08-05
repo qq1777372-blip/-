@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { fetchCurrentUser, login, logout } from '../api'
 import type { CurrentUser, LoginPayload } from '../types/api'
+import type { PermissionModule } from '../types/api'
 
 interface AuthState {
   initialized: boolean
@@ -27,6 +28,14 @@ export const useAuthStore = defineStore('auth', {
 
       const preferredName = state.currentUser.display_name?.trim() || state.currentUser.username
       return `${preferredName} · ${roleMap[state.currentUser.role] ?? state.currentUser.role}`
+    },
+    canAccess: (state) => (module: PermissionModule) => {
+      if (state.currentUser?.role === 'superadmin') return true
+      return state.currentUser?.permissions?.[module] !== 'none'
+    },
+    canWrite: (state) => (module: PermissionModule) => {
+      if (state.currentUser?.role === 'superadmin') return true
+      return state.currentUser?.permissions?.[module] === 'write'
     },
   },
   actions: {

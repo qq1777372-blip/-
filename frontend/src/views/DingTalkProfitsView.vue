@@ -22,7 +22,6 @@ const records = ref<DingTalkProfitRecord[]>([])
 
 const pageSize = computed(() => 20)
 const desktopTableHeight = computed(() => Math.max(420, viewportHeight.value - 420))
-const mobileListHeight = computed(() => Math.max(420, viewportHeight.value - 320))
 
 const storeOptions = computed(() =>
   [...new Set(records.value.map((record) => record.store_name.trim()).filter(Boolean))].sort((left, right) =>
@@ -266,7 +265,6 @@ onMounted(() => {
         <div
           v-loading="loading"
           class="profit-card-list fixed-list-mobile"
-          :style="{ maxHeight: `${mobileListHeight}px` }"
         >
           <template v-if="paginatedRecords.length">
             <article

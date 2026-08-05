@@ -1,4 +1,17 @@
 export type RoleType = 'viewer' | 'editor' | 'superadmin'
+export type PermissionLevel = 'none' | 'read' | 'write'
+export type PermissionModule =
+  | 'dashboard'
+  | 'links'
+  | 'task_bookkeeping'
+  | 'dingtalk_profits'
+  | 'shop_records'
+  | 'peer_shops'
+  | 'licenses'
+  | 'account_usage'
+  | 'mobile_devices'
+  | 'warehouse'
+export type AdminPermissions = Record<PermissionModule, PermissionLevel>
 
 export interface CurrentUser {
   id: number
@@ -8,6 +21,8 @@ export interface CurrentUser {
   is_active: boolean
   avatar_url: string | null
   avatar_name: string | null
+  permissions: AdminPermissions
+  totp_enabled: boolean
 }
 
 export interface AdminSessionInfo {
@@ -26,6 +41,7 @@ export interface AdminUser {
   display_name: string | null
   role: RoleType
   is_active: boolean
+  permissions: AdminPermissions
   created_at: string
 }
 
@@ -71,6 +87,41 @@ export interface DashboardStats {
   pending_settlement_count: number
   recent_shop_records: DashboardRecentShopRecord[]
   recent_license_records: DashboardRecentLicenseRecord[]
+}
+
+export type SystemAlertCategory = 'inventory' | 'outbound' | 'license' | 'task' | 'security'
+export type SystemAlertSeverity = 'critical' | 'warning' | 'info'
+
+export interface SystemAlertItem {
+  key: string
+  category: SystemAlertCategory
+  severity: SystemAlertSeverity
+  title: string
+  description: string
+  route: string
+  occurred_at: string | null
+  acknowledged: boolean
+  acknowledged_at: string | null
+  acknowledged_by: string | null
+}
+
+export interface SystemAlertList {
+  total: number
+  open_count: number
+  acknowledged_count: number
+  critical_count: number
+  items: SystemAlertItem[]
+}
+
+export interface SystemSettings {
+  license_expiry_days: number
+  stale_task_days: number
+  login_failure_threshold: number
+  session_duration_hours: number
+  low_stock_alert_enabled: boolean
+  pending_outbound_alert_enabled: boolean
+  task_alert_enabled: boolean
+  security_alert_enabled: boolean
 }
 
 export interface ServerServiceStatus {
@@ -260,12 +311,14 @@ export interface PeerShop {
   created_at: string
   image_url: string | null
   image_name: string | null
+  extra_fields: Record<string, string | number | null>
 }
 
 export interface PeerShopPayload {
   shop_name: string
   shop_url: string | null
   remark: string | null
+  extra_fields: Record<string, string | number | null>
 }
 
 export interface AccountUsageRecord {
@@ -278,6 +331,7 @@ export interface AccountUsageRecord {
   banned_reason: string | null
   has_password: boolean
   created_at: string
+  extra_fields: Record<string, string | number | null>
 }
 
 export interface AccountUsageRecordPayload {
@@ -288,6 +342,7 @@ export interface AccountUsageRecordPayload {
   usage_notes: string | null
   is_banned: boolean
   banned_reason: string | null
+  extra_fields: Record<string, string | number | null>
 }
 
 export interface AccountUsagePasswordRevealPayload {
@@ -314,6 +369,7 @@ export interface MobileDeviceRecord {
   secondary_card: string | null
   remark: string | null
   created_at: string
+  extra_fields: Record<string, string | number | null>
 }
 
 export interface MobileDeviceRecordPayload {
@@ -321,6 +377,7 @@ export interface MobileDeviceRecordPayload {
   primary_card: string | null
   secondary_card: string | null
   remark: string | null
+  extra_fields: Record<string, string | number | null>
 }
 
 export interface TaskBookkeepingShop {
@@ -440,14 +497,21 @@ export interface TaskBookkeepingSummary {
 export interface LoginPayload {
   username: string
   password: string
-  captcha_id: string
-  captcha_code: string
+  captcha_id?: string | null
+  captcha_code?: string | null
+  totp_code?: string | null
 }
 
 export interface LoginCaptcha {
   captcha_id: string
   image_data: string
   expires_in_seconds: number
+}
+
+export interface TotpSetupResponse {
+  secret: string
+  provisioning_uri: string
+  qr_image_data: string
 }
 
 export interface ChangePasswordPayload {
@@ -464,6 +528,16 @@ export interface AdminUserCreatePayload {
   username: string
   password: string
   role: RoleType
+  permissions?: Partial<AdminPermissions> | null
+}
+
+export interface AdminUserAccessPayload {
+  role: RoleType
+  permissions: AdminPermissions
+}
+
+export interface AdminUserPasswordResetPayload {
+  new_password: string
 }
 
 export interface AdminUserStatusPayload {
@@ -484,4 +558,184 @@ export interface SoftwareAdminUser {
   expire_at: string | null
   last_validated_at: string | null
   created_at: string
+}
+
+export interface Warehouse {
+  id: number
+  code: string
+  name: string
+  address: string | null
+  contact_name: string | null
+  contact_phone: string | null
+  is_active: boolean
+  remark: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type WarehousePayload = Omit<Warehouse, 'id' | 'created_at' | 'updated_at'>
+
+export interface WarehouseProduct {
+  id: number
+  sku: string
+  name: string
+  barcode: string | null
+  specification: string | null
+  unit: string
+  cost_price: number
+  warning_quantity: number
+  is_active: boolean
+  remark: string | null
+  image_url: string | null
+  image_name: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type WarehouseProductPayload = Omit<WarehouseProduct, 'id' | 'created_at' | 'updated_at' | 'image_url' | 'image_name'>
+
+export interface WarehouseStock {
+  id: number | null
+  warehouse_id: number
+  warehouse_code: string
+  warehouse_name: string
+  product_id: number
+  sku: string
+  product_name: string
+  barcode: string | null
+  specification: string | null
+  unit: string
+  cost_price: number
+  image_url: string | null
+  quantity: number
+  locked_quantity: number
+  available_quantity: number
+  warning_quantity: number
+  is_low_stock: boolean
+  updated_at: string | null
+}
+
+export interface WarehouseOrderLinePayload {
+  product_id: number
+  quantity: number
+}
+
+export interface WarehouseOrderLine extends WarehouseOrderLinePayload {
+  sku: string
+  product_name: string
+  specification: string | null
+  unit: string
+  image_url: string | null
+}
+
+export interface WarehouseInboundOrder {
+  id: number
+  order_no: string
+  warehouse_id: number
+  warehouse_name: string
+  source_type: 'purchase' | 'return' | 'other'
+  supplier: string | null
+  status: string
+  remark: string | null
+  operator_username: string | null
+  completed_at: string | null
+  created_at: string
+  items: WarehouseOrderLine[]
+}
+
+export interface WarehouseInboundOrderPayload {
+  warehouse_id: number
+  source_type: 'purchase' | 'return' | 'other'
+  supplier: string | null
+  remark: string | null
+  items: WarehouseOrderLinePayload[]
+}
+
+export type WarehouseOutboundStatus = 'pending' | 'picking' | 'checked' | 'packed' | 'shipped' | 'cancelled'
+
+export interface WarehouseOutboundOrder {
+  id: number
+  order_no: string
+  warehouse_id: number
+  warehouse_name: string
+  external_order_no: string | null
+  delivery_method: 'shipping' | 'pickup'
+  recipient_name: string | null
+  recipient_phone: string | null
+  recipient_address: string | null
+  carrier: string | null
+  tracking_no: string | null
+  status: WarehouseOutboundStatus
+  remark: string | null
+  operator_username: string | null
+  shipped_at: string | null
+  created_at: string
+  updated_at: string
+  items: WarehouseOrderLine[]
+}
+
+export interface WarehouseOutboundOrderPayload {
+  warehouse_id: number
+  external_order_no: string | null
+  delivery_method: 'shipping' | 'pickup'
+  recipient_name: string | null
+  recipient_phone: string | null
+  recipient_address: string | null
+  carrier: string | null
+  tracking_no: string | null
+  remark: string | null
+  items: WarehouseOrderLinePayload[]
+}
+
+export interface WarehouseStockMovement {
+  id: number
+  warehouse_id: number
+  warehouse_name: string
+  product_id: number
+  sku: string
+  product_name: string
+  movement_type: 'inbound' | 'outbound' | 'inbound_correction'
+  quantity_change: number
+  quantity_after: number
+  reference_type: string
+  reference_id: number
+  reference_no: string
+  operator_username: string | null
+  remark: string | null
+  created_at: string
+}
+
+export interface WarehouseSummary {
+  warehouse_count: number
+  product_count: number
+  total_quantity: number
+  total_cost: number
+  low_stock_count: number
+  pending_outbound_count: number
+  today_inbound_quantity: number
+  today_outbound_quantity: number
+}
+
+export type SycmPeriod = 'today' | 'yesterday' | 'recent7' | 'recent30'
+
+export interface SycmOverviewMetric {
+  value: number | null
+  cycleCrc?: number | null
+}
+
+export interface SycmShopSnapshot {
+  id?: number
+  shopId: string
+  shopName: string
+  collectedAt: string
+  receivedAt?: string
+  period?: string
+  uv: number | null
+  pv: number | null
+  cartByrCnt: number | null
+  payByrCnt: number | null
+  payAmt: number | null
+  payRate: number | null
+  overview?: Record<string, SycmOverviewMetric>
+  sourceTree?: unknown[]
 }

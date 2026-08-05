@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ArrowLeft } from '@element-plus/icons-vue'
+import { ArrowLeft, EditPen, FullScreen, Grid, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   appendSavedLinkImages,
@@ -19,8 +19,11 @@ type ToolbarAction = {
   key: string
   label: string
   title?: string
+  group: 'text' | 'insert' | 'block'
   run: () => void
 }
+
+type EditorMode = 'write' | 'split' | 'preview'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,6 +33,8 @@ const submitLoading = ref(false)
 const imageUploading = ref(false)
 const currentLinkId = ref<number | null>(null)
 const editorRef = ref<HTMLTextAreaElement | null>(null)
+const editorMode = ref<EditorMode>('split')
+const isFullscreen = ref(false)
 
 const form = reactive({
   title: '',
@@ -42,6 +47,15 @@ const form = reactive({
 const isEditing = computed(() => currentLinkId.value !== null)
 const pageTitle = computed(() => (isEditing.value ? `编辑文章 #${currentLinkId.value}` : '文章发布'))
 const previewHtml = computed(() => renderSavedLinkMarkdown(form.description))
+const characterCount = computed(() => form.description.length)
+const wordCount = computed(() => {
+  const normalized = form.description.trim()
+  if (!normalized) return 0
+
+  const chineseCharacters = normalized.match(/[\u3400-\u9fff]/g)?.length ?? 0
+  const latinWords = normalized.match(/[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*/g)?.length ?? 0
+  return chineseCharacters + latinWords
+})
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (axios.isAxiosError(error)) {
@@ -445,28 +459,57 @@ function goBack() {
 }
 
 const toolbarActions: ToolbarAction[] = [
-  { key: 'h1', label: '标题1', title: '一级标题', run: () => applyHeading(1) },
-  { key: 'h2', label: '标题2', title: '二级标题', run: () => applyHeading(2) },
-  { key: 'bold', label: '加粗', title: '加粗文本', run: () => wrapSelection('**', '**', '加粗内容') },
-  { key: 'italic', label: '斜体', title: '斜体文本', run: () => wrapSelection('*', '*', '斜体内容') },
-  { key: 'quote', label: '引用', title: '引用块', run: applyQuote },
-  { key: 'center', label: '居中', title: '居中内容', run: () => insertAlignmentBlock('center') },
-  { key: 'link', label: '链接', title: '插入链接', run: insertLink },
-  { key: 'image', label: '图片', title: '上传并插入图片', run: uploadImageAndInsert },
-  { key: 'inline-code', label: '行内码', title: '行内代码', run: insertInlineCode },
-  { key: 'code-block', label: '代码块', title: '代码块', run: insertCodeBlock },
-  { key: 'ul', label: '无序列', title: '无序列表', run: applyBulletList },
-  { key: 'ol', label: '有序列', title: '有序列表', run: applyOrderedList },
-  { key: 'table', label: '表格', title: '插入表格', run: insertTable },
-  { key: 'divider', label: '分割线', title: '分割线', run: insertDivider },
+  { key: 'h1', label: 'H1', title: '一级标题', group: 'text', run: () => applyHeading(1) },
+  { key: 'h2', label: 'H2', title: '二级标题', group: 'text', run: () => applyHeading(2) },
+  { key: 'bold', label: 'B', title: '加粗文本', group: 'text', run: () => wrapSelection('**', '**', '加粗内容') },
+  { key: 'italic', label: 'I', title: '斜体文本', group: 'text', run: () => wrapSelection('*', '*', '斜体内容') },
+  { key: 'quote', label: '引用', title: '引用块', group: 'block', run: applyQuote },
+  { key: 'center', label: '居中', title: '居中内容', group: 'block', run: () => insertAlignmentBlock('center') },
+  { key: 'ul', label: '列表', title: '无序列表', group: 'block', run: applyBulletList },
+  { key: 'ol', label: '编号', title: '有序列表', group: 'block', run: applyOrderedList },
+  { key: 'link', label: '链接', title: '插入链接', group: 'insert', run: insertLink },
+  { key: 'image', label: '图片', title: '上传并插入图片', group: 'insert', run: uploadImageAndInsert },
+  { key: 'inline-code', label: '行内码', title: '行内代码', group: 'insert', run: insertInlineCode },
+  { key: 'code-block', label: '代码块', title: '代码块', group: 'insert', run: insertCodeBlock },
+  { key: 'table', label: '表格', title: '插入表格', group: 'insert', run: insertTable },
+  { key: 'divider', label: '分割线', title: '分割线', group: 'insert', run: insertDivider },
 ]
 
-onMounted(loadDocument)
+const toolbarGroups = computed(() => [
+  toolbarActions.filter((action) => action.group === 'text'),
+  toolbarActions.filter((action) => action.group === 'block'),
+  toolbarActions.filter((action) => action.group === 'insert'),
+])
+
+function toggleFullscreen() {
+  isFullscreen.value = !isFullscreen.value
+  document.body.classList.toggle('tutorial-editor-fullscreen-open', isFullscreen.value)
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && isFullscreen.value) {
+    toggleFullscreen()
+  }
+}
+
+onMounted(() => {
+  void loadDocument()
+  window.addEventListener('keydown', handleGlobalKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.body.classList.remove('tutorial-editor-fullscreen-open')
+  window.removeEventListener('keydown', handleGlobalKeydown)
+})
 </script>
 
 <template>
   <div class="page-stack">
-    <section class="page-block tutorial-editor-shell" v-loading="loading">
+    <section
+      class="page-block tutorial-editor-shell"
+      :class="{ 'tutorial-editor-shell--fullscreen': isFullscreen }"
+      v-loading="loading"
+    >
       <div class="tutorial-editor-topbar">
         <el-button text :icon="ArrowLeft" @click="goBack">返回链接广场</el-button>
 
@@ -509,24 +552,83 @@ onMounted(loadDocument)
         </div>
       </div>
 
-      <div class="tutorial-editor-toolbar-shell">
-        <div class="tutorial-editor-toolbar-shell__label">快捷工具栏</div>
-        <div class="tutorial-editor-toolbar">
-          <button
-            v-for="action in toolbarActions"
-            :key="action.key"
-            class="tutorial-toolbar-button"
-            type="button"
-            :title="action.title || action.label"
-            @click="action.run"
-          >
-            {{ action.label }}
-          </button>
-        </div>
-      </div>
+      <div
+        class="tutorial-editor-workbench"
+        :class="[`tutorial-editor-workbench--${editorMode}`]"
+      >
+        <div class="tutorial-editor-toolbar-shell">
+          <div class="tutorial-editor-toolbar">
+            <div
+              v-for="(group, groupIndex) in toolbarGroups"
+              :key="groupIndex"
+              class="tutorial-editor-toolbar__group"
+            >
+              <button
+                v-for="action in group"
+                :key="action.key"
+                class="tutorial-toolbar-button"
+                :class="{
+                  'tutorial-toolbar-button--bold': action.key === 'bold',
+                  'tutorial-toolbar-button--italic': action.key === 'italic',
+                }"
+                type="button"
+                :title="action.title || action.label"
+                :disabled="action.key === 'image' && imageUploading"
+                @click="action.run"
+              >
+                {{ action.key === 'image' && imageUploading ? '上传中' : action.label }}
+              </button>
+            </div>
+          </div>
 
-      <div class="tutorial-editor-workbench">
-        <section class="tutorial-editor-pane tutorial-editor-pane--write">
+          <div class="tutorial-editor-toolbar__views" aria-label="编辑器视图">
+            <button
+              type="button"
+              class="tutorial-editor-view-button"
+              :class="{ 'is-active': editorMode === 'write' }"
+              title="仅编辑"
+              :aria-pressed="editorMode === 'write'"
+              @click="editorMode = 'write'"
+            >
+              <el-icon><EditPen /></el-icon>
+              <span>编辑</span>
+            </button>
+            <button
+              type="button"
+              class="tutorial-editor-view-button"
+              :class="{ 'is-active': editorMode === 'split' }"
+              title="分栏编辑与预览"
+              :aria-pressed="editorMode === 'split'"
+              @click="editorMode = 'split'"
+            >
+              <el-icon><Grid /></el-icon>
+              <span>分栏</span>
+            </button>
+            <button
+              type="button"
+              class="tutorial-editor-view-button"
+              :class="{ 'is-active': editorMode === 'preview' }"
+              title="仅预览"
+              :aria-pressed="editorMode === 'preview'"
+              @click="editorMode = 'preview'"
+            >
+              <el-icon><View /></el-icon>
+              <span>预览</span>
+            </button>
+            <button
+              type="button"
+              class="tutorial-editor-view-button tutorial-editor-view-button--icon"
+              :class="{ 'is-active': isFullscreen }"
+              :title="isFullscreen ? '退出全屏（Esc）' : '全屏写作'"
+              :aria-pressed="isFullscreen"
+              @click="toggleFullscreen"
+            >
+              <el-icon><FullScreen /></el-icon>
+            </button>
+          </div>
+        </div>
+
+        <section v-show="editorMode !== 'preview'" class="tutorial-editor-pane tutorial-editor-pane--write">
           <header class="tutorial-editor-pane__header">
             <strong>正文</strong>
             <span>Markdown 输入</span>
@@ -543,7 +645,7 @@ onMounted(loadDocument)
           />
         </section>
 
-        <section class="tutorial-editor-pane tutorial-editor-pane--preview">
+        <section v-show="editorMode !== 'write'" class="tutorial-editor-pane tutorial-editor-pane--preview">
           <header class="tutorial-editor-pane__header">
             <strong>预览</strong>
             <span>实时渲染结果</span>
@@ -557,6 +659,13 @@ onMounted(loadDocument)
             </div>
           </div>
         </section>
+
+        <footer class="tutorial-editor-statusbar">
+          <span>Markdown</span>
+          <span>{{ wordCount }} 字</span>
+          <span>{{ characterCount }} 字符</span>
+          <span v-if="imageUploading" class="tutorial-editor-statusbar__uploading">图片上传中</span>
+        </footer>
       </div>
     </section>
   </div>
@@ -665,58 +774,148 @@ onMounted(loadDocument)
 }
 
 .tutorial-editor-toolbar-shell {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 12px 14px;
-  border: 1px solid #e6edf7;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-}
-
-.tutorial-editor-toolbar-shell__label {
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 700;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6edf7;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
 }
 
 .tutorial-editor-toolbar {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+
+.tutorial-editor-toolbar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding-right: 8px;
+  border-right: 1px solid #e5eaf1;
+}
+
+.tutorial-editor-toolbar__group:last-child {
+  padding-right: 0;
+  border-right: none;
 }
 
 .tutorial-toolbar-button {
-  min-width: 52px;
+  min-width: 34px;
   height: 32px;
-  padding: 0 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #ffffff;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
   color: #334155;
   font: inherit;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
 .tutorial-toolbar-button:hover {
-  background: #eef4fb;
-  border-color: #dbeafe;
+  background: #edf3fb;
+  border-color: #dce7f5;
   color: #1d4ed8;
+}
+
+.tutorial-toolbar-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.tutorial-toolbar-button--bold {
+  font-weight: 900;
+}
+
+.tutorial-toolbar-button--italic {
+  font-family: Georgia, serif;
+  font-style: italic;
+}
+
+.tutorial-editor-toolbar__views {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #f7f9fc;
+}
+
+.tutorial-editor-view-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.tutorial-editor-view-button:hover {
+  color: #1e40af;
+}
+
+.tutorial-editor-view-button.is-active {
+  background: #ffffff;
+  color: var(--brand-primary);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1);
+}
+
+.tutorial-editor-view-button--icon {
+  width: 32px;
+  padding: 0;
+  margin-left: 2px;
+  border-left: 1px solid #e2e8f0;
 }
 
 .tutorial-editor-workbench {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 640px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 620px;
+  height: calc(100vh - 330px);
+  max-height: 820px;
   overflow: hidden;
   border: 1px solid var(--panel-border);
-  border-radius: 18px;
+  border-radius: 10px;
   background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+}
+
+.tutorial-editor-workbench--write,
+.tutorial-editor-workbench--preview {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tutorial-editor-workbench--write .tutorial-editor-pane--write,
+.tutorial-editor-workbench--preview .tutorial-editor-pane--preview {
+  grid-column: 1 / -1;
+}
+
+.tutorial-editor-workbench--preview .tutorial-editor-pane--preview {
+  border-left: none;
 }
 
 .tutorial-editor-pane {
@@ -749,12 +948,12 @@ onMounted(loadDocument)
 .tutorial-editor-textarea {
   width: 100%;
   min-height: 100%;
-  padding: 16px 18px;
+  padding: 22px 28px 32px;
   border: none;
   resize: none;
   background: transparent;
   color: var(--text-main);
-  font: 15px/1.9 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  font: 15px/1.85 'Microsoft YaHei', 'PingFang SC', sans-serif;
   outline: none;
   white-space: pre-wrap;
   word-break: break-word;
@@ -763,7 +962,62 @@ onMounted(loadDocument)
 .tutorial-editor-preview-scroll {
   overflow: auto;
   min-height: 0;
-  padding: 18px 20px;
+  padding: 22px 30px 36px;
+}
+
+.tutorial-editor-statusbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-height: 30px;
+  padding: 5px 12px;
+  border-top: 1px solid #e9eef5;
+  background: #fafbfd;
+  color: #7b8798;
+  font-size: 11px;
+}
+
+.tutorial-editor-statusbar__uploading {
+  color: var(--brand-primary);
+}
+
+.tutorial-editor-shell--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  padding: 12px;
+  overflow: hidden;
+  border: none;
+  border-radius: 0;
+  background: #f5f7fa;
+}
+
+.tutorial-editor-shell--fullscreen .tutorial-editor-intro,
+.tutorial-editor-shell--fullscreen .tutorial-editor-fields {
+  display: none;
+}
+
+.tutorial-editor-shell--fullscreen .tutorial-editor-topbar {
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+}
+
+.tutorial-editor-shell--fullscreen .tutorial-editor-workbench {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+
+:global(body.tutorial-editor-fullscreen-open) {
+  overflow: hidden;
 }
 
 .tutorial-preview-empty {
@@ -898,11 +1152,17 @@ onMounted(loadDocument)
 @media (max-width: 1024px) {
   .tutorial-editor-workbench {
     grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    max-height: none;
   }
 
   .tutorial-editor-pane--preview {
     border-top: 1px solid var(--panel-border);
     border-left: none;
+  }
+
+  .tutorial-editor-pane {
+    min-height: 520px;
   }
 
   .tutorial-editor-fields__row {
@@ -921,7 +1181,26 @@ onMounted(loadDocument)
   }
 
   .tutorial-editor-toolbar-shell {
-    padding: 12px;
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 8px;
+  }
+
+  .tutorial-editor-toolbar__views {
+    width: 100%;
+  }
+
+  .tutorial-editor-view-button {
+    flex: 1 1 0;
+  }
+
+  .tutorial-editor-view-button--icon {
+    flex: 0 0 36px;
+  }
+
+  .tutorial-editor-textarea,
+  .tutorial-editor-preview-scroll {
+    padding: 18px;
   }
 }
 </style>
