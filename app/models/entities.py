@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, Numeric, String, Text, UniqueConstraint
 
 from app.core.database import Base
 
@@ -46,6 +46,47 @@ class DingTalkProfitRecord(Base):
     synced_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CompanyExpenseRecord(Base):
+    __tablename__ = "CompanyExpenseRecord"
+
+    id = Column(Integer, primary_key=True, index=True)
+    expense_date = Column(Date, nullable=False, index=True)
+    amount = Column(Numeric(12, 2), nullable=False)
+    category = Column(String(50), nullable=False, index=True)
+    payment_type = Column(String(20), nullable=False, index=True)
+    payment_account = Column(String(50), nullable=False)
+    expense_scope = Column(String(100), nullable=False, default="\u516c\u5171\u8d39\u7528", index=True)
+    description = Column(Text, nullable=False)
+    approval_status = Column(String(20), nullable=False, default="pending", index=True)
+    reimbursement_status = Column(String(20), nullable=False, default="not_required", index=True)
+    submitter_user_id = Column(Integer, nullable=False, index=True)
+    submitter_name = Column(String(50), nullable=False, index=True)
+    reviewer_name = Column(String(50), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    attachment_path = Column(String(500), nullable=True)
+    attachment_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=local_now, index=True)
+    updated_at = Column(DateTime, nullable=False, default=local_now, onupdate=local_now)
+
+
+class PersonalExpenseRecord(Base):
+    __tablename__ = "PersonalExpenseRecord"
+
+    id = Column(Integer, primary_key=True, index=True)
+    record_date = Column(Date, nullable=False, index=True)
+    amount = Column(Numeric(12, 2), nullable=False)
+    transaction_type = Column(String(20), nullable=False, default="expense", index=True)
+    category = Column(String(50), nullable=False, index=True)
+    payment_account = Column(String(50), nullable=False)
+    description = Column(Text, nullable=False)
+    owner_user_id = Column(Integer, nullable=False, index=True)
+    owner_name = Column(String(50), nullable=False, index=True)
+    attachment_path = Column(String(500), nullable=True)
+    attachment_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=local_now, index=True)
+    updated_at = Column(DateTime, nullable=False, default=local_now, onupdate=local_now)
 
 
 class LicenseRecord(Base):

@@ -131,6 +131,110 @@ class DingTalkProfitMonthlySummaryResponse(BaseModel):
     latest_report_date: date_type | None = None
 
 
+CompanyExpensePaymentType = Literal["company", "employee"]
+CompanyExpenseApprovalStatus = Literal["pending", "approved", "rejected"]
+CompanyExpenseReimbursementStatus = Literal["not_required", "pending", "reimbursed"]
+
+
+class CompanyExpenseBase(BaseModel):
+    expense_date: date_type
+    amount: float = Field(..., gt=0, le=99999999)
+    category: str = Field(..., min_length=1, max_length=50)
+    payment_type: CompanyExpensePaymentType
+    payment_account: str = Field(..., min_length=1, max_length=50)
+    expense_scope: str = Field(default="\u516c\u5171\u8d39\u7528", min_length=1, max_length=100)
+    description: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("category", "payment_account", "expense_scope", "description", mode="before")
+    @classmethod
+    def normalize_company_expense_text(cls, value: Any) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("field cannot be empty")
+        return normalized
+
+
+class CompanyExpenseCreate(CompanyExpenseBase):
+    pass
+
+
+class CompanyExpenseUpdate(CompanyExpenseBase):
+    pass
+
+
+class CompanyExpenseStatusUpdate(BaseModel):
+    approval_status: CompanyExpenseApprovalStatus
+    reimbursement_status: CompanyExpenseReimbursementStatus | None = None
+
+
+class CompanyExpenseResponse(CompanyExpenseBase):
+    id: int
+    expense_no: str
+    approval_status: CompanyExpenseApprovalStatus
+    reimbursement_status: CompanyExpenseReimbursementStatus
+    submitter_user_id: int
+    submitter_name: str
+    reviewer_name: str | None = None
+    reviewed_at: datetime | None = None
+    attachment_url: str | None = None
+    attachment_name: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CompanyExpenseSummaryResponse(BaseModel):
+    month_total: float
+    pending_approval_total: float
+    pending_reimbursement_total: float
+    month_record_count: int
+
+
+PersonalExpenseTransactionType = Literal["expense", "income"]
+
+
+class PersonalExpenseBase(BaseModel):
+    record_date: date_type
+    amount: float = Field(..., gt=0, le=99999999)
+    transaction_type: PersonalExpenseTransactionType
+    category: str = Field(..., min_length=1, max_length=50)
+    payment_account: str = Field(..., min_length=1, max_length=50)
+    description: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("category", "payment_account", "description", mode="before")
+    @classmethod
+    def normalize_personal_expense_text(cls, value: Any) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("field cannot be empty")
+        return normalized
+
+
+class PersonalExpenseCreate(PersonalExpenseBase):
+    pass
+
+
+class PersonalExpenseUpdate(PersonalExpenseBase):
+    pass
+
+
+class PersonalExpenseResponse(PersonalExpenseBase):
+    id: int
+    record_no: str
+    owner_user_id: int
+    owner_name: str
+    attachment_url: str | None = None
+    attachment_name: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PersonalExpenseSummaryResponse(BaseModel):
+    month_expense: float
+    month_income: float
+    month_balance: float
+    month_record_count: int
+
+
 class BatchDeleteRequest(BaseModel):
     record_ids: list[int] = Field(default_factory=list, min_length=1)
 
@@ -949,6 +1053,32 @@ class DashboardStatsResponse(BaseModel):
     recent_license_records: list[DashboardRecentLicenseRecord]
 
 
+class ExpenseCategoryListResponse(BaseModel):
+    categories: list[str]
+    is_default: bool
+    usage: dict[str, int] = {}
+    orphan_categories: list[str] = []
+
+
+class ExpenseCategoryUpdateRequest(BaseModel):
+    categories: list[str] = Field(min_length=1, max_length=30)
+
+    @field_validator("categories")
+    @classmethod
+    def _normalize_categories(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in value:
+            name = (item or "").strip()
+            if not name:
+                raise ValueError("分类名不能为空")
+            if len(name) > 50:
+                raise ValueError("分类名不能超过 50 个字符")
+            if name in cleaned:
+                raise ValueError("分类名重复：" + name)
+            cleaned.append(name)
+        return cleaned
+
+
 class SystemSettingsResponse(BaseModel):
     license_expiry_days: int = Field(default=30, ge=1, le=365)
     stale_task_days: int = Field(default=3, ge=1, le=90)
@@ -958,11 +1088,13 @@ class SystemSettingsResponse(BaseModel):
     pending_outbound_alert_enabled: bool = True
     task_alert_enabled: bool = True
     security_alert_enabled: bool = True
+    data_alert_enabled: bool = True
+    profit_stale_days: int = Field(default=3, ge=1, le=90)
 
 
 class SystemAlertItem(BaseModel):
     key: str
-    category: Literal["inventory", "outbound", "license", "task", "security"]
+    category: Literal["inventory", "outbound", "license", "task", "security", "data"]
     severity: Literal["critical", "warning", "info"]
     title: str
     description: str

@@ -57,6 +57,7 @@ from models import (
     AdminSession,
     AdminUser,
     AuditLog,
+    CompanyExpenseRecord,
     AppSetting,
     CustomField,
     DingTalkProfitRecord,
@@ -64,6 +65,7 @@ from models import (
     LoginAttempt,
     MobileDeviceRecord,
     PeerShop,
+    PersonalExpenseRecord,
     SavedLink,
     ShopRecord,
     TaskBookkeepingOwner,
@@ -94,12 +96,23 @@ from schemas import (
     AdminUserStatusUpdateRequest,
     AuditLogResponse,
     ChangePasswordRequest,
+    CompanyExpenseCreate,
+    CompanyExpenseResponse,
+    CompanyExpenseStatusUpdate,
+    CompanyExpenseSummaryResponse,
+    CompanyExpenseUpdate,
+    PersonalExpenseCreate,
+    PersonalExpenseResponse,
+    PersonalExpenseSummaryResponse,
+    PersonalExpenseUpdate,
     CurrentUserProfileUpdateRequest,
     CurrentUserResponse,
     BatchActionResponse,
     BatchDeleteRequest,
     DashboardStatsResponse,
     SystemAlertListResponse,
+    ExpenseCategoryListResponse,
+    ExpenseCategoryUpdateRequest,
     SystemAlertStatusRequest,
     SystemSettingsResponse,
     ServerStatusResponse,
@@ -173,6 +186,7 @@ from schemas import (
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
+APP_FRONTEND_DIST_DIR = BASE_DIR / "app-frontend-dist"
 TUTORIALS_DIST_DIR = BASE_DIR / "tutorials-dist"
 UPLOADS_DIR = BASE_DIR / "uploads"
 LICENSE_UPLOAD_DIR = UPLOADS_DIR / "licenses"
@@ -185,6 +199,10 @@ PRODUCT_PARSE_CACHE_DB_PATH = Path(
 PUBLISH_FAILURE_REPORT_DB_PATH = Path(
     os.getenv("PUBLISH_FAILURE_REPORT_DB_PATH", "/srv/fastapiproject/publish_failure_reports/publish_failure_reports.db"),
 )
+SYCM_DATA_DB_PATH = Path(
+    os.getenv("SYCM_DATA_DB_PATH", "/srv/fastapiproject/sycm_data/sycm_data.db"),
+)
+SYCM_UPLOAD_TOKEN_HEADER = "X-Sycm-Upload-Token"
 PUBLISH_FAILURE_REPORT_READER_USERNAMES = {
     value.strip()
     for value in os.getenv("PUBLISH_FAILURE_REPORT_READER_USERNAMES", "1777372").split(",")
@@ -201,6 +219,11 @@ LINK_UPLOAD_DIR = UPLOADS_DIR / "links"
 AVATAR_UPLOAD_DIR = UPLOADS_DIR / "avatars"
 PEER_SHOP_UPLOAD_DIR = UPLOADS_DIR / "peer-shops"
 WAREHOUSE_PRODUCT_UPLOAD_DIR = UPLOADS_DIR / "warehouse-products"
+COMPANY_EXPENSE_UPLOAD_DIR = UPLOADS_DIR / "company-expenses"
+PERSONAL_EXPENSE_UPLOAD_DIR = UPLOADS_DIR / "personal-expenses"
+COMPANY_EXPENSE_APP_DIR = BASE_DIR / "company-expense-app"
+EXPENSE_SHORTCUT_SETTING_PREFIX = "expense-shortcut-user:"
+EXPENSE_SHORTCUT_AUTH_SCHEME = HTTPBearer(auto_error=False)
 BACKUPS_DIR = BASE_DIR / "backups"
 SESSION_COOKIE_NAME = "admin_session"
 SESSION_DURATION_DAYS = 7
@@ -212,6 +235,17 @@ LOGIN_CAPTCHA_AFTER_FAILURES = 3
 FIELD_CONFIG_INITIALIZED_KEY = "field_config_initialized"
 SYSTEM_SETTINGS_KEY = "system:settings"
 SYSTEM_ALERT_ACK_KEY = "system:alert_acknowledged"
+EXPENSE_CATEGORIES_KEY = "expense:categories"
+DEFAULT_EXPENSE_CATEGORIES = [
+    "办公用品",
+    "快递物流",
+    "餐饮招待",
+    "差旅交通",
+    "软件服务",
+    "广告推广",
+    "采购货款",
+    "其他消费",
+]
 INTERNAL_SYNC_TOKEN_HEADER = "X-Internal-Sync-Token"
 INTERNAL_RESERVED_FIELD_NAMES = {"id", "extra_fields", "record_data"}
 SAVED_LINK_URL_PATTERN = re.compile(r"https?://[^\s<]+", re.IGNORECASE)
@@ -257,6 +291,18 @@ class RulePageImportRequest(BaseModel):
     category_id: str = Field(default="")
     root_json: dict[str, Any]
     source: str = Field(default="software-client")
+
+
+class ExpenseShortcutRecordRequest(BaseModel):
+    book: str = Field(default="personal", max_length=20)
+    amount: float = Field(..., gt=0, le=99999999)
+    category: str = Field(default="", max_length=50)
+    note: str = Field(default="", max_length=500)
+    date: date_type | None = None
+    transaction_type: str = Field(default="expense", max_length=20)
+    payment_type: str = Field(default="company", max_length=20)
+    payment_account: str = Field(default="", max_length=50)
+    expense_scope: str = Field(default="", max_length=100)
 
 
 class RuleCategoryNameDictionaryItem(BaseModel):
@@ -923,6 +969,69 @@ def serialize_mobile_device_record(record: MobileDeviceRecord) -> dict[str, Any]
         "remark": record.remark,
         "extra_fields": parse_json_object(record.extra_fields),
         "created_at": record.created_at,
+    }
+
+
+def build_company_expense_no(record: CompanyExpenseRecord) -> str:
+    return f"CE-{record.expense_date.strftime('%Y%m%d')}-{record.id:06d}"
+
+
+def build_company_expense_attachment_url(record: CompanyExpenseRecord) -> str | None:
+    if not record.attachment_path:
+        return None
+    return f"/company-expenses/{record.id}/attachment-file?v={Path(record.attachment_path).name}"
+
+
+def serialize_company_expense(record: CompanyExpenseRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "expense_no": build_company_expense_no(record),
+        "expense_date": record.expense_date,
+        "amount": float(record.amount or 0),
+        "category": record.category,
+        "payment_type": record.payment_type,
+        "payment_account": record.payment_account,
+        "expense_scope": record.expense_scope,
+        "description": record.description,
+        "approval_status": record.approval_status,
+        "reimbursement_status": record.reimbursement_status,
+        "submitter_user_id": record.submitter_user_id,
+        "submitter_name": record.submitter_name,
+        "reviewer_name": record.reviewer_name,
+        "reviewed_at": record.reviewed_at,
+        "attachment_url": build_company_expense_attachment_url(record),
+        "attachment_name": record.attachment_name,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def build_personal_expense_no(record: PersonalExpenseRecord) -> str:
+    return f"PE-{record.record_date.strftime('%Y%m%d')}-{record.id:06d}"
+
+
+def build_personal_expense_attachment_url(record: PersonalExpenseRecord) -> str | None:
+    if not record.attachment_path:
+        return None
+    return f"/personal-expenses/{record.id}/attachment-file?v={Path(record.attachment_path).name}"
+
+
+def serialize_personal_expense(record: PersonalExpenseRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "record_no": build_personal_expense_no(record),
+        "record_date": record.record_date,
+        "amount": float(record.amount or 0),
+        "transaction_type": record.transaction_type,
+        "category": record.category,
+        "payment_account": record.payment_account,
+        "description": record.description,
+        "owner_user_id": record.owner_user_id,
+        "owner_name": record.owner_name,
+        "attachment_url": build_personal_expense_attachment_url(record),
+        "attachment_name": record.attachment_name,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
     }
 
 
@@ -1865,6 +1974,35 @@ def get_setting(db: Session, key: str) -> AppSetting | None:
     return db.get(AppSetting, key)
 
 
+def get_expense_shortcut_setting(db: Session, user_id: int) -> AppSetting | None:
+    return get_setting(db, f"{EXPENSE_SHORTCUT_SETTING_PREFIX}{user_id}")
+
+
+def hash_expense_shortcut_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def read_expense_shortcut_setting(db: Session, user_id: int) -> dict[str, Any]:
+    setting = get_expense_shortcut_setting(db, user_id)
+    if setting is None:
+        return {}
+    try:
+        value = json.loads(setting.value)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def write_expense_shortcut_setting(db: Session, user_id: int, value: dict[str, Any]) -> None:
+    storage_key = f"{EXPENSE_SHORTCUT_SETTING_PREFIX}{user_id}"
+    serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    setting = get_setting(db, storage_key)
+    if setting is None:
+        db.add(AppSetting(key=storage_key, value=serialized))
+    else:
+        setting.value = serialized
+
+
 DEFAULT_SYSTEM_SETTINGS: dict[str, Any] = {
     "license_expiry_days": 30,
     "stale_task_days": 3,
@@ -1874,6 +2012,8 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, Any] = {
     "pending_outbound_alert_enabled": True,
     "task_alert_enabled": True,
     "security_alert_enabled": True,
+    "data_alert_enabled": True,
+    "profit_stale_days": 3,
 }
 
 
@@ -4555,8 +4695,6 @@ def load_category_rule_payload(platform: str, category_id: str, *, include_snaps
 
 
 AUTO_RULE_PACKAGE_PATCH_BOOL_KEYS = {
-    "forceSingleSizeMapping",
-    "useHeightWeightChestSizeMapping",
     "requireVerticalGuideImage",
     "requireMultiDiscountPromotion",
     "requireSkuCombineContent",
@@ -4564,26 +4702,15 @@ AUTO_RULE_PACKAGE_PATCH_BOOL_KEYS = {
     "requireBarcode",
 }
 
-AUTO_RULE_PACKAGE_PATCH_STRING_LIMITS = {
-    "sizeTextNormalizeMode": 120,
-    "freeSizeSubmitText": 40,
-    "sizeMappingTemplateId": 64,
-    "sizeMappingFields": 4000,
-}
 
-
-def normalize_auto_rule_package_patch(raw_patch: dict[str, Any]) -> dict[str, Any]:
+def normalize_auto_rule_package_patch(raw_patch: dict[str, Any]) -> dict[str, bool]:
     if not isinstance(raw_patch, dict):
         return {}
 
-    normalized: dict[str, Any] = {}
+    normalized: dict[str, bool] = {}
     for key in sorted(AUTO_RULE_PACKAGE_PATCH_BOOL_KEYS):
         if get_rule_bool(raw_patch.get(key)):
             normalized[key] = True
-    for key, limit in AUTO_RULE_PACKAGE_PATCH_STRING_LIMITS.items():
-        value = str(raw_patch.get(key) or "").strip()
-        if value:
-            normalized[key] = value[:limit]
     return normalized
 
 
@@ -5052,6 +5179,62 @@ def get_mobile_device_record_or_404(db: Session, record_id: int) -> MobileDevice
     if db_record is None:
         raise HTTPException(status_code=404, detail="Mobile device record not found")
     return db_record
+
+
+def get_company_expense_or_404(db: Session, record_id: int) -> CompanyExpenseRecord:
+    record = db.get(CompanyExpenseRecord, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="公司消费记录不存在")
+    return record
+
+
+async def save_company_expense_attachment(record: CompanyExpenseRecord, upload: UploadFile) -> None:
+    original_name = Path(upload.filename or "expense-proof").name
+    suffix = Path(original_name).suffix.lower()
+    allowed_suffixes = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"}
+    if suffix not in allowed_suffixes:
+        raise HTTPException(status_code=400, detail="仅支持 JPG、PNG、WEBP、GIF 或 PDF 凭证")
+
+    content = await upload.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="凭证文件不能为空")
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="凭证文件不能超过 20MB")
+
+    filename = f"expense_{record.id}_{secrets.token_hex(8)}{suffix}"
+    save_path = COMPANY_EXPENSE_UPLOAD_DIR / filename
+    save_path.write_bytes(content)
+    record.attachment_path = str(save_path)
+    record.attachment_name = original_name
+
+
+def get_personal_expense_or_404(
+    db: Session,
+    record_id: int,
+    current_user: AdminUser,
+) -> PersonalExpenseRecord:
+    record = db.get(PersonalExpenseRecord, record_id)
+    if record is None or record.owner_user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="?????????")
+    return record
+
+
+async def save_personal_expense_attachment(record: PersonalExpenseRecord, upload: UploadFile) -> None:
+    original_name = Path(upload.filename or "personal-expense-proof").name
+    suffix = Path(original_name).suffix.lower()
+    allowed_suffixes = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"}
+    if suffix not in allowed_suffixes:
+        raise HTTPException(status_code=400, detail="??? JPG?PNG?WEBP?GIF ? PDF ??")
+    content = await upload.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="????????")
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="???????? 20MB")
+    filename = f"personal_expense_{record.id}_{secrets.token_hex(8)}{suffix}"
+    save_path = PERSONAL_EXPENSE_UPLOAD_DIR / filename
+    save_path.write_bytes(content)
+    record.attachment_path = str(save_path)
+    record.attachment_name = original_name
 
 
 def get_task_bookkeeping_record_or_404(db: Session, record_id: int) -> TaskBookkeepingRecord:
@@ -5586,6 +5769,38 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def get_expense_shortcut_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(EXPENSE_SHORTCUT_AUTH_SCHEME),
+    db: Session = Depends(get_db),
+) -> AdminUser:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="\u7f3a\u5c11\u5feb\u6377\u8bb0\u8d26\u4ee4\u724c")
+    token = credentials.credentials.strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="\u5feb\u6377\u8bb0\u8d26\u4ee4\u724c\u65e0\u6548")
+    token_hash = hash_expense_shortcut_token(token)
+    settings_rows = db.scalars(
+        select(AppSetting).where(AppSetting.key.like(f"{EXPENSE_SHORTCUT_SETTING_PREFIX}%"))
+    ).all()
+    for setting in settings_rows:
+        try:
+            stored = json.loads(setting.value)
+        except (TypeError, ValueError):
+            continue
+        stored_hash = str(stored.get("token_hash") or "") if isinstance(stored, dict) else ""
+        if not stored_hash or not hmac.compare_digest(stored_hash, token_hash):
+            continue
+        try:
+            user_id = int(setting.key.removeprefix(EXPENSE_SHORTCUT_SETTING_PREFIX))
+        except ValueError:
+            break
+        user = db.get(AdminUser, user_id)
+        if user is None or not user.is_active:
+            break
+        return user
+    raise HTTPException(status_code=401, detail="\u5feb\u6377\u8bb0\u8d26\u4ee4\u724c\u65e0\u6548\u6216\u5df2\u64a4\u9500")
+
+
 def get_current_software_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(SOFTWARE_AUTH_SCHEME),
     db: Session = Depends(get_db),
@@ -5698,6 +5913,103 @@ def require_internal_sync_token(
         raise HTTPException(status_code=401, detail="Invalid internal sync token")
 
 
+def require_sycm_upload_token(
+    upload_token: str | None = Header(default=None, alias=SYCM_UPLOAD_TOKEN_HEADER),
+) -> None:
+    expected_token = os.getenv("SYCM_UPLOAD_TOKEN", "").strip()
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="SYCM upload token is not configured")
+    if not upload_token or not hmac.compare_digest(upload_token, expected_token):
+        raise HTTPException(status_code=401, detail="Invalid SYCM upload token")
+
+
+def ensure_sycm_data_db() -> None:
+    SYCM_DATA_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sycm_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shop_id TEXT NOT NULL,
+                shop_name TEXT NOT NULL,
+                collected_at TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                uv REAL,
+                pv REAL,
+                cart_byr_cnt REAL,
+                pay_byr_cnt REAL,
+                pay_amt REAL,
+                pay_rate REAL,
+                overview_json TEXT NOT NULL,
+                source_tree_json TEXT NOT NULL,
+                UNIQUE(shop_id, collected_at)
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS ix_sycm_shop_time ON sycm_snapshots(shop_id, collected_at DESC)")
+        snapshot_columns = {row[1] for row in connection.execute("PRAGMA table_info(sycm_snapshots)")}
+        if "period" not in snapshot_columns:
+            connection.execute("ALTER TABLE sycm_snapshots ADD COLUMN period TEXT NOT NULL DEFAULT 'today'")
+        if "date_start" not in snapshot_columns:
+            connection.execute("ALTER TABLE sycm_snapshots ADD COLUMN date_start TEXT NOT NULL DEFAULT ''")
+        if "date_end" not in snapshot_columns:
+            connection.execute("ALTER TABLE sycm_snapshots ADD COLUMN date_end TEXT NOT NULL DEFAULT ''")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_sycm_period_shop_time ON sycm_snapshots(period, shop_id, collected_at DESC)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sycm_sync_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                requested_by INTEGER,
+                requested_at TEXT NOT NULL,
+                claimed_at TEXT,
+                completed_at TEXT,
+                error TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_sycm_sync_status ON sycm_sync_requests(status, requested_at)"
+        )
+        sync_columns = {row[1] for row in connection.execute("PRAGMA table_info(sycm_sync_requests)")}
+        if "results_json" not in sync_columns:
+            connection.execute("ALTER TABLE sycm_sync_requests ADD COLUMN results_json TEXT NOT NULL DEFAULT '[]'")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sycm_collector_devices (
+                device_id TEXT PRIMARY KEY,
+                device_name TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sycm_shop_owners (
+                shop_id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                assigned_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS ix_sycm_owner_device ON sycm_shop_owners(device_id)")
+        connection.commit()
+
+
+def sycm_metric(overview: dict[str, Any], name: str) -> float | None:
+    value = overview.get(name)
+    if not isinstance(value, dict):
+        return None
+    number = value.get("value")
+    return float(number) if isinstance(number, (int, float)) else None
+
+
 def require_role(min_role: str) -> Callable[[AdminUser], AdminUser]:
     def dependency(request: Request, current_user: AdminUser = Depends(get_current_user)) -> AdminUser:
         current_level = ROLE_LEVELS.get(current_user.role, 0)
@@ -5723,9 +6035,12 @@ async def lifespan(_: FastAPI):
     AVATAR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     PEER_SHOP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     WAREHOUSE_PRODUCT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    COMPANY_EXPENSE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    PERSONAL_EXPENSE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_product_parse_cache_db()
     ensure_publish_failure_report_db()
+    ensure_sycm_data_db()
     saved_link_push_stop_event = asyncio.Event()
     saved_link_push_task: asyncio.Task[None] | None = None
     if settings.auto_create_schema:
@@ -5774,6 +6089,392 @@ app.include_router(
         require_superadmin=require_role("superadmin"),
     ),
 )
+
+
+@app.post("/api/sycm/upload", status_code=202)
+async def upload_sycm_snapshot(
+    request: Request,
+    _: None = Depends(require_sycm_upload_token),
+):
+    raw_body = await request.body()
+    if len(raw_body) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="SYCM payload is too large")
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload must be an object")
+
+    shop_id = str(payload.get("shopId") or "").strip()
+    shop_name = str(payload.get("shopName") or shop_id).strip()
+    collected_at = str(payload.get("collectedAt") or "").strip()
+    overview = payload.get("overview")
+    source_tree = payload.get("sourceTree")
+    period = str(payload.get("period") or "today").strip()
+    date_start = str(payload.get("dateStart") or "").strip()
+    date_end = str(payload.get("dateEnd") or "").strip()
+    device_id = str(payload.get("deviceId") or "").strip()
+    if not shop_id or len(shop_id) > 64 or not collected_at:
+        raise HTTPException(status_code=422, detail="shopId and collectedAt are required")
+    if not isinstance(overview, dict) or not isinstance(source_tree, list):
+        raise HTTPException(status_code=422, detail="overview must be an object and sourceTree must be an array")
+    if period not in {"today", "yesterday", "recent7", "recent30"}:
+        raise HTTPException(status_code=422, detail="Invalid SYCM period")
+    if not device_id or len(device_id) > 128:
+        raise HTTPException(status_code=422, detail="deviceId is required")
+    try:
+        datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="collectedAt must be ISO-8601") from exc
+
+    received_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        owner = connection.execute(
+            "SELECT device_id FROM sycm_shop_owners WHERE shop_id=?", (shop_id,)
+        ).fetchone()
+        if owner is None or owner[0] != device_id:
+            raise HTTPException(status_code=409, detail="Shop is assigned to another collector device")
+        if period == "yesterday" and date_end:
+            existing = connection.execute(
+                "SELECT id, collected_at FROM sycm_snapshots "
+                "WHERE shop_id=? AND period='yesterday' AND date_end=? ORDER BY id DESC LIMIT 1",
+                (shop_id, date_end),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    "DELETE FROM sycm_snapshots WHERE shop_id=? AND period='yesterday' AND date_end=? AND id<>?",
+                    (shop_id, date_end, existing[0]),
+                )
+                collected_at = existing[1]
+        connection.execute(
+            """
+            INSERT INTO sycm_snapshots (
+                shop_id, shop_name, collected_at, received_at, uv, pv, cart_byr_cnt,
+                pay_byr_cnt, pay_amt, pay_rate, overview_json, source_tree_json,
+                period, date_start, date_end
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(shop_id, collected_at) DO UPDATE SET
+                shop_name=excluded.shop_name,
+                received_at=excluded.received_at,
+                uv=excluded.uv,
+                pv=excluded.pv,
+                cart_byr_cnt=excluded.cart_byr_cnt,
+                pay_byr_cnt=excluded.pay_byr_cnt,
+                pay_amt=excluded.pay_amt,
+                pay_rate=excluded.pay_rate,
+                overview_json=excluded.overview_json,
+                source_tree_json=excluded.source_tree_json
+            """,
+            (
+                shop_id, shop_name[:200], collected_at, received_at,
+                sycm_metric(overview, "uv"), sycm_metric(overview, "pv"),
+                sycm_metric(overview, "cartByrCnt"), sycm_metric(overview, "payByrCnt"),
+                sycm_metric(overview, "payAmt"), sycm_metric(overview, "payRate"),
+                json.dumps(overview, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(source_tree, ensure_ascii=False, separators=(",", ":")),
+                period, date_start, date_end,
+            ),
+        )
+        snapshot_id = connection.execute(
+            "SELECT id FROM sycm_snapshots WHERE shop_id=? AND collected_at=?",
+            (shop_id, collected_at),
+        ).fetchone()[0]
+        connection.commit()
+    return {"ok": True, "snapshotId": snapshot_id, "receivedAt": received_at}
+
+
+def serialize_sycm_sync_request(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "requestedAt": row["requested_at"],
+        "claimedAt": row["claimed_at"],
+        "completedAt": row["completed_at"],
+        "error": row["error"],
+        "results": json.loads(row["results_json"] or "[]") if "results_json" in row.keys() else [],
+    }
+
+
+@app.post("/api/sycm/sync-requests", status_code=202)
+def create_sycm_sync_request(current_user: AdminUser = Depends(get_current_user)):
+    now = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        existing = connection.execute(
+            "SELECT * FROM sycm_sync_requests WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if existing is not None:
+            return serialize_sycm_sync_request(existing)
+        cursor = connection.execute(
+            "INSERT INTO sycm_sync_requests(status, requested_by, requested_at) VALUES ('pending', ?, ?)",
+            (current_user.id, now),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM sycm_sync_requests WHERE id=?", (cursor.lastrowid,)).fetchone()
+    return serialize_sycm_sync_request(row)
+
+
+@app.get("/api/sycm/sync-requests/latest")
+def get_latest_sycm_sync_request(_: AdminUser = Depends(get_current_user)):
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT * FROM sycm_sync_requests ORDER BY id DESC LIMIT 1").fetchone()
+    return serialize_sycm_sync_request(row) if row is not None else None
+
+
+@app.get("/api/sycm/collector-devices")
+def list_sycm_collector_devices(_: AdminUser = Depends(get_current_user)):
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT d.device_id, d.device_name, d.first_seen_at, d.last_seen_at, "
+            "COUNT(o.shop_id) AS shop_count "
+            "FROM sycm_collector_devices d LEFT JOIN sycm_shop_owners o ON o.device_id=d.device_id "
+            "GROUP BY d.device_id, d.device_name, d.first_seen_at, d.last_seen_at "
+            "ORDER BY d.last_seen_at DESC"
+        ).fetchall()
+    result = []
+    for row in rows:
+        try:
+            last_seen = datetime.fromisoformat(row["last_seen_at"])
+            online = last_seen >= now - timedelta(minutes=1)
+        except ValueError:
+            online = False
+        result.append({
+            "deviceId": row["device_id"][:8],
+            "deviceName": row["device_name"],
+            "firstSeenAt": row["first_seen_at"],
+            "lastSeenAt": row["last_seen_at"],
+            "shopCount": row["shop_count"],
+            "online": online,
+        })
+    return result
+
+
+@app.post("/api/sycm/sync-requests/claim")
+async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sycm_upload_token)):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    device_id = str(payload.get("deviceId") or "").strip() if isinstance(payload, dict) else ""
+    device_name = str(payload.get("deviceName") or device_id).strip() if isinstance(payload, dict) else ""
+    shop_ids = payload.get("shopIds", []) if isinstance(payload, dict) else []
+    shop_ids = list(dict.fromkeys(str(value).strip() for value in shop_ids if str(value).strip())) if isinstance(shop_ids, list) else []
+    if not device_id or len(device_id) > 128 or not shop_ids:
+        raise HTTPException(status_code=422, detail="deviceId and shopIds are required")
+    now_dt = datetime.now(ZoneInfo("Asia/Shanghai"))
+    now = now_dt.isoformat()
+    owner_stale_before = (now_dt - timedelta(minutes=10)).isoformat()
+    stale_before = (now_dt - timedelta(minutes=15)).isoformat()
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT INTO sycm_collector_devices(device_id, device_name, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, last_seen_at=excluded.last_seen_at",
+            (device_id, device_name[:200], now, now),
+        )
+        allowed_shop_ids: list[str] = []
+        for shop_id in shop_ids:
+            owner = connection.execute(
+                "SELECT device_id, last_seen_at FROM sycm_shop_owners WHERE shop_id=?", (shop_id,)
+            ).fetchone()
+            if owner is None:
+                connection.execute(
+                    "INSERT INTO sycm_shop_owners(shop_id, device_id, assigned_at, last_seen_at) VALUES (?, ?, ?, ?)",
+                    (shop_id, device_id, now, now),
+                )
+                allowed_shop_ids.append(shop_id)
+            elif owner["device_id"] == device_id:
+                connection.execute("UPDATE sycm_shop_owners SET last_seen_at=? WHERE shop_id=?", (now, shop_id))
+                allowed_shop_ids.append(shop_id)
+            elif owner["last_seen_at"] < owner_stale_before:
+                connection.execute(
+                    "UPDATE sycm_shop_owners SET device_id=?, assigned_at=?, last_seen_at=? WHERE shop_id=?",
+                    (device_id, now, now, shop_id),
+                )
+                allowed_shop_ids.append(shop_id)
+        connection.execute(
+            "UPDATE sycm_sync_requests SET status='pending', claimed_at=NULL "
+            "WHERE status='running' AND claimed_at < ?",
+            (stale_before,),
+        )
+        row = connection.execute(
+            "SELECT * FROM sycm_sync_requests WHERE status='pending' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row is None or not allowed_shop_ids:
+            connection.commit()
+            return None
+        connection.execute(
+            "UPDATE sycm_sync_requests SET status='running', claimed_at=?, error='' WHERE id=?",
+            (now, row["id"]),
+        )
+        connection.commit()
+        claimed = connection.execute("SELECT * FROM sycm_sync_requests WHERE id=?", (row["id"],)).fetchone()
+    result = serialize_sycm_sync_request(claimed)
+    result["allowedShopIds"] = allowed_shop_ids
+    result["deviceId"] = device_id
+    return result
+
+
+@app.post("/api/sycm/sync-requests/{request_id}/complete")
+async def complete_sycm_sync_request(
+    request_id: int,
+    request: Request,
+    _: None = Depends(require_sycm_upload_token),
+):
+    payload = await request.json()
+    succeeded = bool(payload.get("success", False)) if isinstance(payload, dict) else False
+    error = str(payload.get("error") or "")[:500] if isinstance(payload, dict) else ""
+    results = payload.get("results", []) if isinstance(payload, dict) else []
+    if not isinstance(results, list):
+        results = []
+    status = "completed" if succeeded else "failed"
+    completed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        cursor = connection.execute(
+            "UPDATE sycm_sync_requests SET status=?, completed_at=?, error=?, results_json=? "
+            "WHERE id=? AND status='running'",
+            (status, completed_at, error, json.dumps(results, ensure_ascii=False), request_id),
+        )
+        connection.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=409, detail="Sync request is not running")
+    return {"ok": True, "status": status, "completedAt": completed_at}
+
+
+def _serialize_sycm_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"], "shopId": row["shop_id"], "shopName": row["shop_name"],
+        "collectedAt": row["collected_at"], "receivedAt": row["received_at"],
+        "uv": row["uv"], "pv": row["pv"], "cartByrCnt": row["cart_byr_cnt"],
+        "payByrCnt": row["pay_byr_cnt"], "payAmt": row["pay_amt"], "payRate": row["pay_rate"],
+        "period": row["period"], "dateStart": row["date_start"], "dateEnd": row["date_end"],
+        "overview": json.loads(row["overview_json"]),
+        "sourceTree": json.loads(row["source_tree_json"]),
+    }
+
+
+def _latest_sycm_period(period: str) -> list[dict[str, Any]]:
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT s.* FROM sycm_snapshots s
+            INNER JOIN (
+                SELECT shop_id, MAX(id) AS id
+                FROM sycm_snapshots WHERE period=? GROUP BY shop_id
+            ) latest ON latest.id=s.id
+            WHERE s.period=?
+            ORDER BY s.shop_name COLLATE NOCASE
+            """
+            , (period, period)
+        ).fetchall()
+    return [_serialize_sycm_row(row) for row in rows]
+
+
+def _aggregate_sycm_yesterday(days: int, period: str) -> list[dict[str, Any]]:
+    end = datetime.now(ZoneInfo("Asia/Shanghai")).date() - timedelta(days=1)
+    start = end - timedelta(days=days - 1)
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT s.* FROM sycm_snapshots s
+            INNER JOIN (
+                SELECT shop_id, date_end, MAX(id) AS id
+                FROM sycm_snapshots
+                WHERE period='yesterday' AND date_end BETWEEN ? AND ?
+                GROUP BY shop_id, date_end
+            ) latest ON latest.id=s.id
+            ORDER BY s.shop_name COLLATE NOCASE, s.date_end
+            """,
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+
+    shops: dict[str, dict[str, Any]] = {}
+    derived = {"payRate", "crtRate", "uvValue", "payPct", "avgPv", "itmAvgPv"}
+    for row in rows:
+        shop = shops.setdefault(row["shop_id"], {
+            "id": row["id"], "shopId": row["shop_id"], "shopName": row["shop_name"],
+            "collectedAt": row["collected_at"], "receivedAt": row["received_at"],
+            "period": period, "dateStart": start.isoformat(), "dateEnd": end.isoformat(),
+            "overview": {}, "sourceTree": [], "availableDays": 0,
+        })
+        shop["availableDays"] += 1
+        shop["id"] = max(shop["id"], row["id"])
+        shop["collectedAt"] = max(shop["collectedAt"], row["collected_at"])
+        for name, metric in json.loads(row["overview_json"]).items():
+            value = metric.get("value") if isinstance(metric, dict) else None
+            if name not in derived and isinstance(value, (int, float)):
+                target = shop["overview"].setdefault(name, {"value": 0, "cycleCrc": None})
+                target["value"] += value
+
+    for shop in shops.values():
+        overview = shop["overview"]
+        value = lambda name: float(overview.get(name, {}).get("value") or 0)
+        def set_ratio(name: str, numerator: float, denominator: float) -> None:
+            overview[name] = {"value": numerator / denominator if denominator else 0, "cycleCrc": None}
+        set_ratio("payRate", value("payByrCnt"), value("uv"))
+        set_ratio("crtRate", value("crtByrCnt"), value("uv"))
+        set_ratio("uvValue", value("payAmt"), value("uv"))
+        set_ratio("payPct", value("payAmt"), value("payByrCnt"))
+        set_ratio("avgPv", value("pv"), value("uv"))
+        set_ratio("itmAvgPv", value("itmPv"), value("itmUv"))
+        shop.update(
+            uv=value("uv"), pv=value("pv"), cartByrCnt=value("cartByrCnt"),
+            payByrCnt=value("payByrCnt"), payAmt=value("payAmt"),
+            payRate=overview["payRate"]["value"],
+        )
+    return list(shops.values())
+
+
+@app.get("/api/sycm/latest")
+def list_latest_sycm_snapshots(period: str = "today", _: AdminUser = Depends(get_current_user)):
+    if period not in {"today", "yesterday", "recent7", "recent30"}:
+        raise HTTPException(status_code=422, detail="Invalid SYCM period")
+    if period == "recent7":
+        return _aggregate_sycm_yesterday(7, period)
+    if period == "recent30":
+        return _aggregate_sycm_yesterday(30, period)
+    return _latest_sycm_period(period)
+
+
+@app.get("/api/sycm/yesterday")
+def list_yesterday_sycm_snapshots(_: AdminUser = Depends(get_current_user)):
+    return _latest_sycm_period("yesterday")
+
+
+@app.get("/api/sycm/shops/{shop_id}/snapshots")
+def list_sycm_shop_snapshots(
+    shop_id: str,
+    limit: int = 100,
+    _: AdminUser = Depends(get_current_user),
+):
+    limit = max(1, min(limit, 500))
+    with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT * FROM sycm_snapshots WHERE shop_id=?
+            ORDER BY collected_at DESC LIMIT ?
+            """,
+            (shop_id, limit),
+        ).fetchall()
+    return [
+        {
+            "id": row["id"], "shopId": row["shop_id"], "shopName": row["shop_name"],
+            "collectedAt": row["collected_at"], "receivedAt": row["received_at"],
+            "uv": row["uv"], "pv": row["pv"], "cartByrCnt": row["cart_byr_cnt"],
+            "payByrCnt": row["pay_byr_cnt"], "payAmt": row["pay_amt"], "payRate": row["pay_rate"],
+            "overview": json.loads(row["overview_json"]),
+            "sourceTree": json.loads(row["source_tree_json"]),
+        }
+        for row in rows
+    ]
 
 
 @app.get(
@@ -5839,6 +6540,64 @@ def frontend_ui_response(path: str = "") -> FileResponse:
         return FileResponse(candidate)
 
     return frontend_index_response()
+
+
+def app_frontend_index_response() -> FileResponse:
+    return FileResponse(
+        APP_FRONTEND_DIST_DIR / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+def app_frontend_response(path: str = "") -> FileResponse:
+    if not APP_FRONTEND_DIST_DIR.exists():
+        raise HTTPException(status_code=404, detail="App frontend build not found")
+
+    requested_path = path.strip("/")
+    if not requested_path:
+        return app_frontend_index_response()
+
+    candidate = (APP_FRONTEND_DIST_DIR / requested_path).resolve()
+    try:
+        candidate.relative_to(APP_FRONTEND_DIST_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Not found") from exc
+
+    if candidate.is_file():
+        return FileResponse(candidate)
+
+    return app_frontend_index_response()
+
+
+def is_bare_mobile_webview(request: Request) -> bool:
+    user_agent = request.headers.get("user-agent", "").lower()
+    if any(marker in user_agent for marker in ("dingtalk", "micromessenger", "alipayclient")):
+        return False
+    ios_webview = (
+        ("iphone" in user_agent or "ipad" in user_agent)
+        and "applewebkit" in user_agent
+        and "mobile/" in user_agent
+        and "safari/" not in user_agent
+    )
+    android_webview = "android" in user_agent and ("; wv)" in user_agent or " wv" in user_agent)
+    return ios_webview or android_webview
+
+
+def mobile_app_upgrade_redirect(path: str) -> RedirectResponse:
+    target = "/app/login" if path.strip("/").startswith("login") else "/app/tabs/home"
+    return RedirectResponse(
+        url=f"{target}?app_version=0.7.14-alpha",
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 def build_login_redirect_url(target_path: str) -> str:
@@ -5922,13 +6681,72 @@ def license_page(current_user: AdminUser | None = Depends(get_current_user_optio
 
 
 @app.get("/ui")
-def vue_ui_root():
+def vue_ui_root(request: Request):
+    if is_bare_mobile_webview(request):
+        return mobile_app_upgrade_redirect("dashboard")
     return frontend_ui_response()
 
 
+@app.get("/ui/app")
+def legacy_mobile_app_root():
+    return RedirectResponse(url="/app/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+@app.get("/ui/app/{path:path}")
+def legacy_mobile_app_page(path: str):
+    return RedirectResponse(url=f"/app/{path.lstrip('/')}", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
 @app.get("/ui/{path:path}")
-def vue_ui_page(path: str):
+def vue_ui_page(path: str, request: Request):
+    embedded_app = request.query_params.get("embedded_app") == "1"
+    if is_bare_mobile_webview(request) and not Path(path).suffix and not embedded_app:
+        return mobile_app_upgrade_redirect(path)
     return frontend_ui_response(path)
+
+
+@app.get("/app")
+def mobile_app_root():
+    return app_frontend_response()
+
+
+@app.get("/app/{path:path}")
+def mobile_app_page(path: str):
+    return app_frontend_response(path)
+
+
+@app.get("/company-expenses-app")
+def company_expenses_app_redirect(
+    current_user: AdminUser | None = Depends(get_current_user_optional),
+):
+    if current_user is None:
+        return RedirectResponse(
+            url=build_login_redirect_url("/company-expenses-app/"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(url="/company-expenses-app/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/company-expenses-app/")
+def company_expenses_app(
+    current_user: AdminUser | None = Depends(get_current_user_optional),
+):
+    if current_user is None:
+        return RedirectResponse(
+            url=build_login_redirect_url("/company-expenses-app/"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    page_file = COMPANY_EXPENSE_APP_DIR / "index.html"
+    if not page_file.is_file():
+        raise HTTPException(status_code=404, detail="Company expense app not found")
+    return FileResponse(
+        page_file,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/tutorials")
@@ -6141,7 +6959,7 @@ def login(
             )
 
     clear_login_failures(db, payload.username, ip_address)
-    revoked_session_count = clear_user_sessions(db, db_user.id)
+    revoked_session_count = 0
     admin_session = create_session_cookie(db_user, response, db, request=request)
     write_audit_log(
         db,
@@ -7268,6 +8086,78 @@ def build_system_alerts(db: Session) -> list[dict[str, Any]]:
                 "/audit-logs", attempt.last_attempt_at,
             )
 
+    if config["data_alert_enabled"]:
+        # SQLite returns Date columns through func.max() as text; normalise before doing date math.
+        def as_report_date(value: Any) -> date_type | None:
+            if value is None or isinstance(value, date_type):
+                return value
+            try:
+                return date_type.fromisoformat(str(value)[:10])
+            except ValueError:
+                return None
+
+        profit_stale_days = int(config["profit_stale_days"])
+        latest_profit_date = as_report_date(db.scalar(select(func.max(DingTalkProfitRecord.report_date))))
+
+        if latest_profit_date is None:
+            add_alert(
+                "data:profit-empty", "data", "critical", "钉钉利润数据为空",
+                "系统里没有任何钉钉利润记录，请确认机器人是否正常接收群消息并同步。",
+                "/dingtalk-profits", None,
+            )
+        else:
+            lag_days = (today - latest_profit_date).days
+            if lag_days > profit_stale_days:
+                add_alert(
+                    "data:profit-stale", "data",
+                    "critical" if lag_days > profit_stale_days * 2 else "warning",
+                    "钉钉利润数据已停止更新",
+                    f"最新记录日期为 {latest_profit_date.isoformat()}，距今 {lag_days} 天没有新数据"
+                    f"（预警阈值 {profit_stale_days} 天）。请检查机器人是否正常接收群消息。",
+                    "/dingtalk-profits", datetime.combine(latest_profit_date, datetime.min.time()),
+                )
+
+            # Per-store silence: a global date check stays blind when one store goes quiet
+            # while the others keep reporting.
+            store_rows = db.execute(
+                select(
+                    DingTalkProfitRecord.store_name,
+                    func.max(DingTalkProfitRecord.report_date),
+                ).group_by(DingTalkProfitRecord.store_name),
+            ).all()
+            active_since = today - timedelta(days=30)
+            for store_name, raw_store_latest in store_rows:
+                store_latest = as_report_date(raw_store_latest)
+                # Skip stores with no recent history at all - closed, not broken.
+                if store_latest is None or store_latest < active_since:
+                    continue
+                store_lag = (today - store_latest).days
+                if store_lag > profit_stale_days:
+                    add_alert(
+                        f"data:profit-store-stale:{store_name}", "data", "warning",
+                        f"{store_name} 已停止上报利润",
+                        f"该店铺最新记录为 {store_latest.isoformat()}，距今 {store_lag} 天没有新数据，"
+                        f"但其他店铺仍在正常上报。",
+                        "/dingtalk-profits", datetime.combine(store_latest, datetime.min.time()),
+                    )
+
+        # Stock carrying quantity but no cost price understates 库存成本 on the dashboard.
+        cost_products = {item.id: item for item in db.scalars(select(WarehouseProduct)).all()}
+        cost_warehouses = {item.id: item for item in db.scalars(select(Warehouse)).all()}
+        for stock in db.scalars(select(WarehouseStock).where(WarehouseStock.quantity > 0)).all():
+            product = cost_products.get(stock.product_id)
+            if product is None or product.cost_price:
+                continue
+            warehouse = cost_warehouses.get(stock.warehouse_id)
+            warehouse_label = warehouse.name if warehouse else "未知仓库"
+            add_alert(
+                f"data:stock-cost:{stock.warehouse_id}:{stock.product_id}", "data", "warning",
+                f"{product.name} 缺少成本价",
+                f"{warehouse_label} / SKU {product.sku} 结存 {stock.quantity} "
+                f"{product.unit}，但成本价为空或 0，库存成本统计会偏低。",
+                "/warehouse/stock", stock.updated_at,
+            )
+
     severity_order = {"critical": 0, "warning": 1, "info": 2}
     alerts.sort(key=lambda item: (item["acknowledged"], severity_order[item["severity"]], item["occurred_at"] or datetime.min))
     return alerts
@@ -7316,6 +8206,183 @@ def update_system_alert_status(
     )
     commit_session(db, default_detail="Failed to update system alert")
     return list_system_alerts(db=db, _=current_user)
+
+
+def resolve_expense_categories(db: Session) -> tuple[list[str], bool]:
+    stored = read_json_setting(db, EXPENSE_CATEGORIES_KEY, None)
+    if not isinstance(stored, list):
+        return list(DEFAULT_EXPENSE_CATEGORIES), True
+    cleaned: list[str] = []
+    for item in stored:
+        name = str(item or "").strip()
+        if name and name not in cleaned:
+            cleaned.append(name)
+    if not cleaned:
+        return list(DEFAULT_EXPENSE_CATEGORIES), True
+    return cleaned, False
+
+
+def build_expense_category_usage(db: Session) -> dict[str, int]:
+    usage: dict[str, int] = {}
+    for model in (CompanyExpenseRecord, PersonalExpenseRecord):
+        rows = db.execute(
+            select(model.category, func.count(model.id)).group_by(model.category),
+        ).all()
+        for name, count in rows:
+            key = str(name or "").strip()
+            if not key:
+                continue
+            usage[key] = usage.get(key, 0) + int(count or 0)
+    return usage
+
+
+def build_expense_category_payload(db: Session) -> dict[str, Any]:
+    categories, is_default = resolve_expense_categories(db)
+    usage = build_expense_category_usage(db)
+    return {
+        "categories": categories,
+        "is_default": is_default,
+        "usage": usage,
+        "orphan_categories": sorted(name for name in usage if name not in categories),
+    }
+
+
+@app.get(
+    "/expense-categories",
+    response_model=ExpenseCategoryListResponse,
+    summary="List configurable expense categories",
+)
+def list_expense_categories(
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    return build_expense_category_payload(db)
+
+
+@app.put(
+    "/expense-categories",
+    response_model=ExpenseCategoryListResponse,
+    summary="Replace expense categories (handles rename, reorder, add and remove)",
+)
+def replace_expense_categories(
+    payload: ExpenseCategoryUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    write_json_setting(db, EXPENSE_CATEGORIES_KEY, payload.categories)
+    commit_session(db, default_detail="Failed to save expense categories")
+    return build_expense_category_payload(db)
+
+
+@app.delete(
+    "/expense-categories",
+    response_model=ExpenseCategoryListResponse,
+    summary="Reset expense categories back to the built-in defaults",
+)
+def reset_expense_categories(
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    write_json_setting(db, EXPENSE_CATEGORIES_KEY, list(DEFAULT_EXPENSE_CATEGORIES))
+    commit_session(db, default_detail="Failed to reset expense categories")
+    return build_expense_category_payload(db)
+
+
+@app.get(
+    "/internal/ops/alert-digest",
+    summary="Internal: operational digest for the DingTalk bot",
+)
+def get_internal_ops_alert_digest(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_internal_sync_token),
+):
+    alerts = build_system_alerts(db)
+    open_alerts = [item for item in alerts if not item["acknowledged"]]
+    critical_alerts = [item for item in open_alerts if item["severity"] == "critical"]
+    inventory_alerts = [item for item in open_alerts if item["category"] == "inventory"]
+
+    task_summary = build_task_bookkeeping_summary(
+        db.scalars(select(TaskBookkeepingRecord)).all(),
+    )
+
+    current_month = datetime.now(TASK_BOOKKEEPING_TIMEZONE).strftime("%Y-%m")
+    month_profit = next(
+        (
+            bucket["total_profit"]
+            for bucket in build_dingtalk_profit_monthly_summary(db)
+            if bucket["month"] == current_month
+        ),
+        0.0,
+    )
+
+    report_day = date_type.today().isoformat()
+    lines = [
+        "📋 每日运营摘要 (%s)" % report_day,
+        "------------------------",
+        "当月钉钉利润：￥%s" % month_profit,
+        "待签收任务：%s" % task_summary["pending_signed_count"],
+        "待结算任务：%s" % task_summary["pending_settlement_count"],
+        "库存预警：%s" % len(inventory_alerts),
+        "",
+    ]
+    if open_alerts:
+        lines.append(
+            "⚠️ 待处理提醒 %d 条（严重 %d）"
+            % (len(open_alerts), len(critical_alerts)),
+        )
+        for item in open_alerts[:8]:
+            mark = "🔴" if item["severity"] == "critical" else "🟡"
+            lines.append("%s %s" % (mark, item["title"]))
+            lines.append("    %s" % item["description"])
+        if len(open_alerts) > 8:
+            lines.append(
+                "… 还有 %d 条，详见后台"
+                % (len(open_alerts) - 8),
+            )
+    else:
+        lines.append("✅ 暂无待处理提醒")
+
+    return {
+        "date": report_day,
+        "open_count": len(open_alerts),
+        "critical_count": len(critical_alerts),
+        "pending_signed_count": task_summary["pending_signed_count"],
+        "pending_settlement_count": task_summary["pending_settlement_count"],
+        "low_stock_count": len(inventory_alerts),
+        "current_month_profit": month_profit,
+        "text": "\n".join(lines),
+    }
+
+
+@app.get(
+    "/internal/ops/open-alerts",
+    summary="Internal: unacknowledged system alerts for the DingTalk bot",
+)
+def get_internal_ops_open_alerts(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_internal_sync_token),
+):
+    """Structured alert feed for the bot.
+
+    The digest endpoint renders text truncated to 8 entries, which cannot be
+    de-duplicated. This returns every open alert with its stable key so the bot
+    can track exactly what it has already pushed and never repeat itself.
+    """
+    open_alerts = [item for item in build_system_alerts(db) if not item["acknowledged"]]
+    return {
+        "total": len(open_alerts),
+        "items": [
+            {
+                "key": item["key"],
+                "category": item["category"],
+                "severity": item["severity"],
+                "title": item["title"],
+                "description": item["description"],
+                "occurred_at": item["occurred_at"],
+            }
+            for item in open_alerts
+        ],
+    }
 
 
 @app.get("/system-settings", response_model=SystemSettingsResponse, summary="Read system settings")
@@ -8109,6 +9176,588 @@ def create_task_bookkeeping_shop(
     )
     db.refresh(db_record)
     return db_record
+
+
+@app.get("/expense-shortcut/token", summary="Get Apple Shortcut bookkeeping token status")
+def get_expense_shortcut_token_status(
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    stored = read_expense_shortcut_setting(db, current_user.id)
+    return {
+        "enabled": bool(stored.get("token_hash")),
+        "created_at": stored.get("created_at"),
+        "endpoint": "/expense-shortcut/record",
+    }
+
+
+@app.post("/expense-shortcut/token", summary="Create or rotate Apple Shortcut bookkeeping token")
+def create_expense_shortcut_token(
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    raw_token = f"xse_{secrets.token_urlsafe(32)}"
+    created_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    write_expense_shortcut_setting(
+        db,
+        current_user.id,
+        {"token_hash": hash_expense_shortcut_token(raw_token), "created_at": created_at},
+    )
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="expense_shortcut_token_rotated",
+        resource_type="expense_shortcut_token",
+        resource_id=current_user.id,
+        details={"created_at": created_at},
+    )
+    commit_session(db, default_detail="Failed to create expense shortcut token")
+    return {
+        "enabled": True,
+        "created_at": created_at,
+        "endpoint": "/expense-shortcut/record",
+        "token": raw_token,
+    }
+
+
+@app.delete("/expense-shortcut/token", summary="Revoke Apple Shortcut bookkeeping token")
+def revoke_expense_shortcut_token(
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    setting = get_expense_shortcut_setting(db, current_user.id)
+    if setting is not None:
+        db.delete(setting)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="expense_shortcut_token_revoked",
+        resource_type="expense_shortcut_token",
+        resource_id=current_user.id,
+        details={},
+    )
+    commit_session(db, default_detail="Failed to revoke expense shortcut token")
+    return {"enabled": False}
+
+
+@app.post("/expense-shortcut/record", status_code=status.HTTP_201_CREATED, summary="Create expense from Apple Shortcuts")
+def create_expense_from_shortcut(
+    payload: ExpenseShortcutRecordRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(get_expense_shortcut_user),
+):
+    book = payload.book.strip().lower()
+    record_date = payload.date or date_type.today()
+    category = payload.category.strip()
+    note = payload.note.strip()
+    payment_account = payload.payment_account.strip() or "\u5feb\u6377\u6307\u4ee4"
+
+    if book == "personal":
+        transaction_type = payload.transaction_type.strip().lower()
+        if transaction_type not in {"expense", "income"}:
+            raise HTTPException(status_code=400, detail="\u4e2a\u4eba\u8d26\u672c\u7c7b\u578b\u53ea\u80fd\u662f expense \u6216 income")
+        category = category or ("\u5176\u4ed6\u6536\u5165" if transaction_type == "income" else "\u65e5\u5e38\u6d88\u8d39")
+        record = PersonalExpenseRecord(
+            record_date=record_date,
+            amount=payload.amount,
+            transaction_type=transaction_type,
+            category=category,
+            payment_account=payment_account,
+            description=note or category,
+            owner_user_id=current_user.id,
+            owner_name=build_admin_user_public_name(current_user),
+        )
+        db.add(record)
+        commit_session(db, default_detail="Failed to create personal expense from shortcut")
+        db.refresh(record)
+        serialized_record = serialize_personal_expense(record)
+        action = "personal_expense_created_from_shortcut"
+        resource_type = "personal_expense"
+        message = "\u4e2a\u4eba\u8bb0\u8d26\u6210\u529f"
+    elif book == "company":
+        if ROLE_LEVELS.get(current_user.role, 0) < ROLE_LEVELS["editor"]:
+            raise HTTPException(status_code=403, detail="\u5f53\u524d\u8d26\u53f7\u6ca1\u6709\u516c\u53f8\u8bb0\u8d26\u6743\u9650")
+        payment_type = payload.payment_type.strip().lower()
+        if payment_type not in {"company", "employee"}:
+            raise HTTPException(status_code=400, detail="\u516c\u53f8\u652f\u4ed8\u7c7b\u578b\u53ea\u80fd\u662f company \u6216 employee")
+        category = category or "\u5176\u4ed6\u6d88\u8d39"
+        record = CompanyExpenseRecord(
+            expense_date=record_date,
+            amount=payload.amount,
+            category=category,
+            payment_type=payment_type,
+            payment_account=payment_account,
+            expense_scope=payload.expense_scope.strip() or "\u516c\u5171\u8d39\u7528",
+            description=note or category,
+            approval_status="approved",
+            reimbursement_status="not_required",
+            submitter_user_id=current_user.id,
+            submitter_name=build_admin_user_public_name(current_user),
+        )
+        db.add(record)
+        commit_session(db, default_detail="Failed to create company expense from shortcut")
+        db.refresh(record)
+        serialized_record = serialize_company_expense(record)
+        action = "company_expense_created_from_shortcut"
+        resource_type = "company_expense"
+        message = "\u516c\u53f8\u8bb0\u8d26\u6210\u529f"
+    else:
+        raise HTTPException(status_code=400, detail="\u8d26\u672c\u7c7b\u578b\u53ea\u80fd\u662f personal \u6216 company")
+
+    write_audit_log(
+        db,
+        actor=current_user,
+        action=action,
+        resource_type=resource_type,
+        resource_id=record.id,
+        details=serialized_record,
+    )
+    commit_session(db, default_detail="Failed to record expense shortcut audit log")
+    return {"success": True, "message": message, "book": book, "record": serialized_record}
+
+
+@app.get(
+    "/company-expenses/summary",
+    response_model=CompanyExpenseSummaryResponse,
+    summary="Get current-month company expense summary",
+)
+def get_company_expense_summary(
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    today = date_type.today()
+    month_start = today.replace(day=1)
+    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    records = db.scalars(
+        select(CompanyExpenseRecord).where(
+            CompanyExpenseRecord.expense_date >= month_start,
+            CompanyExpenseRecord.expense_date < next_month,
+        )
+    ).all()
+    return {
+        "month_total": sum(float(record.amount or 0) for record in records if record.approval_status != "rejected"),
+        "pending_approval_total": sum(float(record.amount or 0) for record in records if record.approval_status == "pending"),
+        "pending_reimbursement_total": sum(float(record.amount or 0) for record in records if record.reimbursement_status == "pending"),
+        "month_record_count": len(records),
+    }
+
+
+@app.get(
+    "/company-expenses",
+    response_model=list[CompanyExpenseResponse],
+    summary="List company expenses",
+)
+def list_company_expenses(
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    records = db.scalars(
+        select(CompanyExpenseRecord).order_by(
+            CompanyExpenseRecord.expense_date.desc(),
+            CompanyExpenseRecord.id.desc(),
+        )
+    ).all()
+    return [serialize_company_expense(record) for record in records]
+
+
+@app.post(
+    "/company-expenses",
+    response_model=CompanyExpenseResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a company expense",
+)
+def create_company_expense(
+    payload: CompanyExpenseCreate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    submitter_name = build_admin_user_public_name(current_user)
+    record = CompanyExpenseRecord(
+        expense_date=payload.expense_date,
+        amount=payload.amount,
+        category=payload.category,
+        payment_type=payload.payment_type,
+        payment_account=payload.payment_account,
+        expense_scope=payload.expense_scope,
+        description=payload.description,
+        approval_status="approved",
+        reimbursement_status="not_required",
+        submitter_user_id=current_user.id,
+        submitter_name=submitter_name,
+    )
+    db.add(record)
+    commit_session(db, default_detail="Failed to create company expense")
+    db.refresh(record)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="company_expense_created",
+        resource_type="company_expense",
+        resource_id=record.id,
+        details=serialize_company_expense(record),
+    )
+    commit_session(db, default_detail="Failed to record company expense audit log")
+    return serialize_company_expense(record)
+
+
+@app.get(
+    "/company-expenses/{record_id}",
+    response_model=CompanyExpenseResponse,
+    summary="Get a company expense",
+)
+def get_company_expense(
+    record_id: int,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    return serialize_company_expense(get_company_expense_or_404(db, record_id))
+
+
+@app.put(
+    "/company-expenses/{record_id}",
+    response_model=CompanyExpenseResponse,
+    summary="Update a company expense",
+)
+def update_company_expense(
+    record_id: int,
+    payload: CompanyExpenseUpdate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = get_company_expense_or_404(db, record_id)
+    record.expense_date = payload.expense_date
+    record.amount = payload.amount
+    record.category = payload.category
+    record.payment_type = payload.payment_type
+    record.payment_account = payload.payment_account
+    record.expense_scope = payload.expense_scope
+    record.description = payload.description
+    if payload.payment_type == "company":
+        record.reimbursement_status = "not_required"
+    elif record.reimbursement_status == "not_required":
+        record.reimbursement_status = "pending"
+    commit_session(db, default_detail="Failed to update company expense")
+    db.refresh(record)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="company_expense_updated",
+        resource_type="company_expense",
+        resource_id=record.id,
+        details=serialize_company_expense(record),
+    )
+    commit_session(db, default_detail="Failed to record company expense audit log")
+    return serialize_company_expense(record)
+
+
+@app.patch(
+    "/company-expenses/{record_id}/status",
+    response_model=CompanyExpenseResponse,
+    summary="Review or reimburse a company expense",
+)
+def update_company_expense_status(
+    record_id: int,
+    payload: CompanyExpenseStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = get_company_expense_or_404(db, record_id)
+    record.approval_status = payload.approval_status
+    if payload.reimbursement_status is not None:
+        record.reimbursement_status = payload.reimbursement_status
+    if record.payment_type == "company":
+        record.reimbursement_status = "not_required"
+    record.reviewer_name = build_admin_user_public_name(current_user)
+    record.reviewed_at = datetime.utcnow()
+    commit_session(db, default_detail="Failed to update company expense status")
+    db.refresh(record)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="company_expense_status_updated",
+        resource_type="company_expense",
+        resource_id=record.id,
+        details=serialize_company_expense(record),
+    )
+    commit_session(db, default_detail="Failed to record company expense audit log")
+    return serialize_company_expense(record)
+
+
+@app.post(
+    "/company-expenses/{record_id}/attachment",
+    response_model=CompanyExpenseResponse,
+    summary="Upload or replace a company expense proof",
+)
+async def upload_company_expense_attachment(
+    record_id: int,
+    attachment: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = get_company_expense_or_404(db, record_id)
+    await save_company_expense_attachment(record, attachment)
+    commit_session(db, default_detail="Failed to upload company expense attachment")
+    db.refresh(record)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="company_expense_attachment_uploaded",
+        resource_type="company_expense",
+        resource_id=record.id,
+        details={"attachment_name": record.attachment_name},
+    )
+    commit_session(db, default_detail="Failed to record company expense attachment audit log")
+    return serialize_company_expense(record)
+
+
+@app.get(
+    "/company-expenses/{record_id}/attachment-file",
+    summary="Download a protected company expense proof",
+)
+def get_company_expense_attachment_file(
+    record_id: int,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(require_role("viewer")),
+):
+    record = get_company_expense_or_404(db, record_id)
+    if not record.attachment_path:
+        raise HTTPException(status_code=404, detail="该消费记录没有凭证")
+    file_path = Path(record.attachment_path).resolve()
+    upload_dir = COMPANY_EXPENSE_UPLOAD_DIR.resolve()
+    if file_path.parent != upload_dir or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="消费凭证文件不存在")
+    return FileResponse(
+        file_path,
+        filename=record.attachment_name or file_path.name,
+        media_type=mimetypes.guess_type(file_path.name)[0] or "application/octet-stream",
+    )
+
+
+@app.delete(
+    "/company-expenses/{record_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a company expense",
+)
+def delete_company_expense(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("editor")),
+):
+    record = get_company_expense_or_404(db, record_id)
+    backup_path = create_sqlite_backup("company-expense-delete")
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="company_expense_deleted",
+        resource_type="company_expense",
+        resource_id=record.id,
+        details={**serialize_company_expense(record), "backup_path": backup_path},
+    )
+    db.delete(record)
+    commit_session(db, default_detail="Failed to delete company expense")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get(
+    "/personal-expenses/summary",
+    response_model=PersonalExpenseSummaryResponse,
+    summary="Get current user's personal expense summary",
+)
+def get_personal_expense_summary(
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    today = date_type.today()
+    month_start = today.replace(day=1)
+    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    records = db.scalars(
+        select(PersonalExpenseRecord).where(
+            PersonalExpenseRecord.owner_user_id == current_user.id,
+            PersonalExpenseRecord.record_date >= month_start,
+            PersonalExpenseRecord.record_date < next_month,
+        )
+    ).all()
+    month_expense = sum(float(record.amount or 0) for record in records if record.transaction_type == "expense")
+    month_income = sum(float(record.amount or 0) for record in records if record.transaction_type == "income")
+    return {
+        "month_expense": month_expense,
+        "month_income": month_income,
+        "month_balance": month_income - month_expense,
+        "month_record_count": len(records),
+    }
+
+
+@app.get(
+    "/personal-expenses",
+    response_model=list[PersonalExpenseResponse],
+    summary="List current user's personal expenses",
+)
+def list_personal_expenses(
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    records = db.scalars(
+        select(PersonalExpenseRecord)
+        .where(PersonalExpenseRecord.owner_user_id == current_user.id)
+        .order_by(PersonalExpenseRecord.record_date.desc(), PersonalExpenseRecord.id.desc())
+    ).all()
+    return [serialize_personal_expense(record) for record in records]
+
+
+@app.post(
+    "/personal-expenses",
+    response_model=PersonalExpenseResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a personal expense entry",
+)
+def create_personal_expense(
+    payload: PersonalExpenseCreate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    record = PersonalExpenseRecord(
+        record_date=payload.record_date,
+        amount=payload.amount,
+        transaction_type=payload.transaction_type,
+        category=payload.category,
+        payment_account=payload.payment_account,
+        description=payload.description,
+        owner_user_id=current_user.id,
+        owner_name=build_admin_user_public_name(current_user),
+    )
+    db.add(record)
+    commit_session(db, default_detail="Failed to create personal expense")
+    db.refresh(record)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="personal_expense_created",
+        resource_type="personal_expense",
+        resource_id=record.id,
+        details=serialize_personal_expense(record),
+    )
+    commit_session(db, default_detail="Failed to record personal expense audit log")
+    return serialize_personal_expense(record)
+
+
+@app.get(
+    "/personal-expenses/{record_id}",
+    response_model=PersonalExpenseResponse,
+    summary="Get a personal expense entry",
+)
+def get_personal_expense(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    return serialize_personal_expense(get_personal_expense_or_404(db, record_id, current_user))
+
+
+@app.put(
+    "/personal-expenses/{record_id}",
+    response_model=PersonalExpenseResponse,
+    summary="Update a personal expense entry",
+)
+def update_personal_expense(
+    record_id: int,
+    payload: PersonalExpenseUpdate,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    record = get_personal_expense_or_404(db, record_id, current_user)
+    record.record_date = payload.record_date
+    record.amount = payload.amount
+    record.transaction_type = payload.transaction_type
+    record.category = payload.category
+    record.payment_account = payload.payment_account
+    record.description = payload.description
+    commit_session(db, default_detail="Failed to update personal expense")
+    db.refresh(record)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="personal_expense_updated",
+        resource_type="personal_expense",
+        resource_id=record.id,
+        details=serialize_personal_expense(record),
+    )
+    commit_session(db, default_detail="Failed to record personal expense audit log")
+    return serialize_personal_expense(record)
+
+
+@app.post(
+    "/personal-expenses/{record_id}/attachment",
+    response_model=PersonalExpenseResponse,
+    summary="Upload a personal expense proof",
+)
+async def upload_personal_expense_attachment(
+    record_id: int,
+    attachment: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    record = get_personal_expense_or_404(db, record_id, current_user)
+    await save_personal_expense_attachment(record, attachment)
+    commit_session(db, default_detail="Failed to upload personal expense attachment")
+    db.refresh(record)
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="personal_expense_attachment_uploaded",
+        resource_type="personal_expense",
+        resource_id=record.id,
+        details={"attachment_name": record.attachment_name},
+    )
+    commit_session(db, default_detail="Failed to record personal expense attachment audit log")
+    return serialize_personal_expense(record)
+
+
+@app.get(
+    "/personal-expenses/{record_id}/attachment-file",
+    summary="Download current user's personal expense proof",
+)
+def get_personal_expense_attachment_file(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    record = get_personal_expense_or_404(db, record_id, current_user)
+    if not record.attachment_path:
+        raise HTTPException(status_code=404, detail="???????????")
+    file_path = Path(record.attachment_path).resolve()
+    upload_dir = PERSONAL_EXPENSE_UPLOAD_DIR.resolve()
+    if file_path.parent != upload_dir or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="???????????")
+    return FileResponse(
+        file_path,
+        filename=record.attachment_name or file_path.name,
+        media_type=mimetypes.guess_type(file_path.name)[0] or "application/octet-stream",
+    )
+
+
+@app.delete(
+    "/personal-expenses/{record_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a personal expense entry",
+)
+def delete_personal_expense(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: AdminUser = Depends(require_role("viewer")),
+):
+    record = get_personal_expense_or_404(db, record_id, current_user)
+    backup_path = create_sqlite_backup("personal-expense-delete")
+    write_audit_log(
+        db,
+        actor=current_user,
+        action="personal_expense_deleted",
+        resource_type="personal_expense",
+        resource_id=record.id,
+        details={**serialize_personal_expense(record), "backup_path": backup_path},
+    )
+    db.delete(record)
+    commit_session(db, default_detail="Failed to delete personal expense")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get(
