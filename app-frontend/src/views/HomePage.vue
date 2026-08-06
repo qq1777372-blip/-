@@ -9,7 +9,7 @@ import { readCache, syncedLabel, writeCache } from '../dataCache'
 import { network } from '../network'
 import { can, session } from '../session'
 import { appModules, canOpenModule } from '../modules'
-import { defaultHomeKeys, maxHomeModules, readHomeKeys, resolveHomeModules, writeHomeKeys } from '../homeModules'
+import { defaultHomeKeys, fetchSharedHomeKeys, maxHomeModules, publishSharedHomeKeys, readHomeKeys, resolveHomeModules, writeHomeKeys } from '../homeModules'
 
 type Summary = Record<string, number>
 type Month = { month: string; total_profit: number }
@@ -26,6 +26,9 @@ const monthsLoaded = ref(false)
 const cachedAt = ref<number | null>(null)
 let loadId = 0
 const homeKeys = ref(readHomeKeys())
+// The backend only accepts a PUT from a superadmin, so this flag decides whether
+// 自定义 is offered at all -- it is not the permission check itself.
+const canEditModules = computed(() => session.user?.role === 'superadmin')
 const permittedModules = computed(() => appModules.filter((item) => canOpenModule(item, session.user?.role, can)))
 const visibleModules = computed(() => resolveHomeModules(homeKeys.value, session.user?.role, can))
 const configOptions = computed(() => permittedModules.value.filter((item) => item.key !== 'company-expenses' || can('task_bookkeeping')))
@@ -102,6 +105,23 @@ async function loadSummary() {
   loading.value = false
 }
 
+// The shared layout wins over whatever this device had cached. A superadmin
+// arriving before anything is published seeds the shared row from their current
+// layout, otherwise they would keep editing a private copy while everyone else
+// saw the defaults.
+async function loadSharedModules() {
+  const shared = await fetchSharedHomeKeys()
+  if (shared === undefined) return
+  if (shared) {
+    homeKeys.value = shared
+    writeHomeKeys(shared)
+  } else if (canEditModules.value) {
+    void publishSharedHomeKeys(homeKeys.value)
+  } else {
+    homeKeys.value = [...defaultHomeKeys]
+  }
+}
+
 function toggleModule(key: string) {
   const next = homeKeys.value.includes(key)
     ? homeKeys.value.filter((item) => item !== key)
@@ -109,16 +129,21 @@ function toggleModule(key: string) {
   if (!next.length || next.length > maxHomeModules) return
   homeKeys.value = next
   writeHomeKeys(next)
+  if (canEditModules.value) void publishSharedHomeKeys(next)
 }
 function resetModules() {
   homeKeys.value = [...defaultHomeKeys]
   writeHomeKeys(homeKeys.value)
+  if (canEditModules.value) void publishSharedHomeKeys(homeKeys.value)
 }
 
 function refreshWhenVisible() {
   if (document.visibilityState === 'visible') void loadSummary()
 }
-onIonViewWillEnter(loadSummary)
+onIonViewWillEnter(() => {
+  void loadSummary()
+  void loadSharedModules()
+})
 onMounted(() => document.addEventListener('visibilitychange', refreshWhenVisible))
 onUnmounted(() => document.removeEventListener('visibilitychange', refreshWhenVisible))
 </script>
@@ -130,8 +155,8 @@ onUnmounted(() => document.removeEventListener('visibilitychange', refreshWhenVi
       <main class="native-home">
         <div class="home-heading">
           <div><h2>常用功能</h2><small v-if="configuring">选择要显示在首页的功能</small></div>
-          <button v-if="!configuring" @click="configuring = true"><IonIcon :icon="createOutline" />自定义</button>
-          <div v-else class="home-config-actions"><button @click="resetModules">恢复默认</button><button @click="configuring = false">完成</button></div>
+          <div v-if="configuring" class="home-config-actions"><button @click="resetModules">恢复默认</button><button @click="configuring = false">完成</button></div>
+          <button v-else-if="canEditModules" @click="configuring = true"><IonIcon :icon="createOutline" />自定义</button>
         </div>
         <section v-if="!configuring" class="home-functions">
           <button v-for="item in visibleModules" :key="item.key" @click="router.push(item.route)"><span :style="{ background: `${item.color}15`, color: item.color }"><IonIcon :icon="item.icon" /></span><b>{{ item.title }}</b></button>
@@ -155,5 +180,5 @@ onUnmounted(() => document.removeEventListener('visibilitychange', refreshWhenVi
 </template>
 
 <style scoped>
-.native-home{padding:12px 14px 92px}.home-heading{display:flex;justify-content:space-between;align-items:center;margin:12px 2px 8px}.home-heading h2{margin:0;font-size:16px}.home-heading>div:first-child{min-width:0}.home-heading small{display:block;margin-top:3px;color:var(--app-muted);font-size:10px}.home-heading button,.home-heading span{display:flex;align-items:center;gap:3px;border:0;color:var(--app-muted);background:transparent;font-size:11px}.home-heading button ion-icon{font-size:14px}.home-config-actions{display:flex;gap:5px}.home-config-actions button:last-child{color:#1677ff;font-weight:700}.home-functions{display:grid;grid-template-columns:repeat(4,1fr);gap:17px 7px;padding:15px 8px;border-radius:14px;background:var(--app-card)}.home-functions button,.home-function-picker button{min-width:0;padding:0;border:0;color:var(--app-text);background:transparent}.home-functions span,.home-function-picker span{width:45px;height:45px;margin:auto;display:grid;place-items:center;border-radius:14px}.home-functions .all-functions{color:#64748b;background:#edf1f7}.home-functions ion-icon,.home-function-picker ion-icon{font-size:23px}.home-functions b,.home-function-picker b{display:block;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.home-function-picker{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:12px 8px;border:1px solid var(--app-line);border-radius:14px;background:var(--app-card)}.home-function-picker button{position:relative;padding:8px 3px 10px;border:1px solid transparent;border-radius:12px}.home-function-picker button.selected{border-color:#93b4ff;background:#eff5ff}.home-function-picker i{display:block;margin-top:4px;color:var(--app-muted);font-size:10px;font-style:normal}.home-function-picker .selected i{color:#1677ff}.business-board{overflow:hidden;border-radius:14px;background:var(--app-card)}.business-grid{display:grid;grid-template-columns:repeat(3,1fr)}.business-grid div{padding:13px 11px;border-right:1px solid var(--app-line);border-bottom:1px solid var(--app-line)}.business-grid div:nth-child(3n){border-right:0}.business-grid small,.business-grid b{display:block}.business-grid small{color:var(--app-muted);font-size:10px}.business-grid b{margin-top:7px;font-size:17px}.trend-head{width:100%;display:flex;justify-content:space-between;padding:12px 12px 3px;border:0;color:var(--app-text);background:transparent}.trend-head span{font-weight:700}.trend-head em{color:var(--app-blue);font-style:normal;font-size:11px}.mini-chart{height:92px;display:flex;align-items:end;gap:11px;padding:4px 13px 11px}.mini-chart>div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:end;gap:5px}.mini-chart span{width:18px;min-height:5px;border-radius:5px 5px 2px 2px;background:#1991ff}.mini-chart span.negative{background:#ef4444}.mini-chart small{color:var(--app-muted);font-size:9px}.home-todos{overflow:hidden;border-radius:14px;background:var(--app-card)}.home-todos button{width:100%;display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:center;padding:12px;border:0;border-bottom:1px solid var(--app-line);text-align:left;color:var(--app-text);background:transparent}.home-todos button:last-child{border-bottom:0}.home-todos i{width:7px;height:7px;border-radius:50%}.orange{background:#f59e0b}.red{background:#ef4444}.blue{background:#1991ff}.home-todos b,.home-todos small{display:block}.home-todos b{font-size:13px}.home-todos small{margin-top:3px;color:var(--app-muted);font-size:10px}.home-todos strong{font-size:18px}.ion-palette-dark .home-functions .all-functions{background:#1d2939}.ion-palette-dark .home-function-picker button.selected{background:#12233d}
+.native-home{padding:12px 14px 92px}.home-heading{display:flex;justify-content:space-between;align-items:center;margin:12px 2px 8px}.home-heading h2{margin:0;font-size:16px}.home-heading>div:first-child{min-width:0}.home-heading small{display:block;margin-top:3px;color:var(--app-muted);font-size:10px}.home-heading button,.home-heading span{display:flex;align-items:center;gap:3px;border:0;color:var(--app-muted);background:transparent;font-size:11px}.home-heading button ion-icon{font-size:14px}.home-config-actions{display:flex;gap:5px}.home-config-actions button:last-child{color:#1677ff;font-weight:700}.home-functions{display:grid;grid-template-columns:repeat(4,1fr);gap:17px 7px;padding:15px 8px;border-radius:14px;background:var(--app-card)}.home-functions button,.home-function-picker button{min-width:0;padding:0;border:0;color:var(--app-text);background:transparent}.home-functions span,.home-function-picker span{width:45px;height:45px;margin:auto;display:grid;place-items:center;border-radius:14px}.home-functions .all-functions{color:#64748b;background:#64748b15}.home-functions ion-icon,.home-function-picker ion-icon{font-size:23px}.home-functions b,.home-function-picker b{display:block;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.home-function-picker{display:grid;grid-template-columns:repeat(4,1fr);gap:10px 7px;padding:15px 8px;border:0;border-radius:14px;background:var(--app-card)}.home-function-picker button{position:relative;padding:8px 3px 10px;border:1px solid transparent;border-radius:12px}.home-function-picker button.selected{border-color:#93b4ff;background:#eff5ff}.home-function-picker i{display:block;margin-top:4px;color:var(--app-muted);font-size:10px;font-style:normal}.home-function-picker .selected i{color:#1677ff}.business-board{overflow:hidden;border-radius:14px;background:var(--app-card)}.business-grid{display:grid;grid-template-columns:repeat(3,1fr)}.business-grid div{padding:13px 11px;border-right:1px solid var(--app-line);border-bottom:1px solid var(--app-line)}.business-grid div:nth-child(3n){border-right:0}.business-grid small,.business-grid b{display:block}.business-grid small{color:var(--app-muted);font-size:10px}.business-grid b{margin-top:7px;font-size:17px}.trend-head{width:100%;display:flex;justify-content:space-between;padding:12px 12px 3px;border:0;color:var(--app-text);background:transparent}.trend-head span{font-weight:700}.trend-head em{color:var(--app-blue);font-style:normal;font-size:11px}.mini-chart{height:92px;display:flex;align-items:end;gap:11px;padding:4px 13px 11px}.mini-chart>div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:end;gap:5px}.mini-chart span{width:18px;min-height:5px;border-radius:5px 5px 2px 2px;background:#1991ff}.mini-chart span.negative{background:#ef4444}.mini-chart small{color:var(--app-muted);font-size:9px}.home-todos{overflow:hidden;border-radius:14px;background:var(--app-card)}.home-todos button{width:100%;display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:center;padding:12px;border:0;border-bottom:1px solid var(--app-line);text-align:left;color:var(--app-text);background:transparent}.home-todos button:last-child{border-bottom:0}.home-todos i{width:7px;height:7px;border-radius:50%}.orange{background:#f59e0b}.red{background:#ef4444}.blue{background:#1991ff}.home-todos b,.home-todos small{display:block}.home-todos b{font-size:13px}.home-todos small{margin-top:3px;color:var(--app-muted);font-size:10px}.home-todos strong{font-size:18px}.ion-palette-dark .home-function-picker button.selected{background:#12233d}
 </style>
