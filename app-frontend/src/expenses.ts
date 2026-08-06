@@ -1,0 +1,3 @@
+export type CompanyExpense={id:number;expense_no:string;expense_date:string;amount:number;category:string;payment_type:'company'|'employee';payment_account:string;expense_scope:string;description:string;approval_status:'pending'|'approved'|'rejected';reimbursement_status:'not_required'|'pending'|'reimbursed';submitter_name:string;reviewer_name:string|null;attachment_url:string|null;attachment_name:string|null;created_at:string;updated_at:string}
+export const amount=(value:number)=>`¥ ${Number(value||0).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})}`
+export const payLabel=(value:CompanyExpense)=>value.payment_type==='employee'?'员工垫付':'公司支付'

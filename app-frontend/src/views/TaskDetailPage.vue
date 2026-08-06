@@ -1,0 +1,23 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { IonButton, IonContent, IonIcon, IonPage, alertController, toastController } from '@ionic/vue'
+import { createOutline, trashOutline } from 'ionicons/icons'
+import { useRoute, useRouter } from 'vue-router'
+import PageHeader from '../components/PageHeader.vue'
+import { api, ApiError } from '../api'
+import { session } from '../session'
+import { dateTime, money, type TaskRecord, type TaskStatus } from '../taskRecords'
+const route=useRoute();const router=useRouter();const record=ref<TaskRecord|null>(null);const loading=ref(true)
+const canWrite=computed(()=>['editor','superadmin'].includes(session.user?.role||''))
+const load=async()=>{try{record.value=await api<TaskRecord>(`/task-bookkeeping/records/${route.params.id}`)}catch(error){const toast=await toastController.create({message:error instanceof ApiError?error.detail:'任务详情加载失败',duration:2200,color:'danger'});await toast.present()}finally{loading.value=false}}
+const setStatus=async(field:'signed_status'|'settlement_status',value:TaskStatus)=>{if(!record.value)return;try{await api('/task-bookkeeping/records/batch-status',{method:'PATCH',body:JSON.stringify({record_ids:[record.value.id],field,value})});record.value={...record.value,[field]:value}}catch(error){const toast=await toastController.create({message:error instanceof ApiError?error.detail:'状态更新失败',duration:2200,color:'danger'});await toast.present()}}
+const remove=async()=>{if(!record.value)return;const alert=await alertController.create({header:'删除任务记录',message:`确定删除 ${record.value.order_no} 吗？`,buttons:['取消',{text:'删除',role:'destructive',handler:async()=>{try{await api<void>(`/task-bookkeeping/records/${record.value?.id}`,{method:'DELETE'});router.back()}catch(error){const toast=await toastController.create({message:error instanceof ApiError?error.detail:'删除失败',duration:2200,color:'danger'});await toast.present()}}}]});await alert.present()}
+onMounted(load)
+</script>
+<template><IonPage><PageHeader :title="record?.shop_name || '任务详情'" :subtitle="record?.order_no || '完整任务资料'" back /><IonContent><main class="page-pad task-detail">
+  <section v-if="record" class="hero panel"><small>{{ dateTime(record.task_time) }}</small><h1>{{ money(record.principal_amount) }}</h1><p>{{ record.owner_name }} · {{ record.order_count }} 单</p><div><button :class="record.signed_status" @click="canWrite&&setStatus('signed_status',record.signed_status==='pending'?'completed':'pending')">{{ record.signed_status==='completed'?'已签收':'待签收' }}</button><button :class="record.settlement_status" @click="canWrite&&setStatus('settlement_status',record.settlement_status==='pending'?'completed':'pending')">{{ record.settlement_status==='completed'?'已结算':'待结算' }}</button></div></section>
+  <section v-if="record" class="field-list panel"><div><span>任务时间</span><strong>{{ new Date(record.task_time || '').toLocaleString('zh-CN') }}</strong></div><div><span>店铺名称</span><strong>{{ record.shop_name }}</strong></div><div><span>负责人</span><strong>{{ record.owner_name }}</strong></div><div><span>刷单数量</span><strong>{{ record.order_count }}</strong></div><div><span>单笔本金</span><strong>{{ money(record.principal_amount) }}</strong></div><div><span>佣金支出</span><strong>{{ money(record.commission_amount) }}</strong></div><div><span>礼品花费</span><strong>{{ money(record.gift_amount) }}</strong></div><div><span>备注</span><strong>{{ record.note || '—' }}</strong></div></section>
+  <div v-else-if="!loading" class="empty-state">记录不存在或当前账号无权查看</div>
+  <div v-if="record&&canWrite" class="actions"><IonButton @click="router.push(`/tabs/form/tasks/${record.id}`)"><IonIcon slot="start" :icon="createOutline" />编辑任务</IonButton><IonButton color="danger" fill="outline" @click="remove"><IonIcon slot="start" :icon="trashOutline" />删除</IonButton></div>
+</main></IonContent></IonPage></template>
+<style scoped>.task-detail{display:grid;gap:12px}.hero{padding:22px}.hero small,.hero p{color:var(--app-muted)}.hero h1{margin:8px 0;font-size:30px;color:#2563eb}.hero p{margin:0}.hero div{display:flex;gap:8px;margin-top:16px}.hero button{border:0;border-radius:999px;padding:7px 13px}.hero .pending{color:#b45309;background:#fff4d6}.hero .completed{color:#047857;background:#dcfce7}.field-list div{display:grid;grid-template-columns:105px 1fr;gap:15px;padding:14px 16px;border-bottom:1px solid var(--app-line)}.field-list div:last-child{border:0}.field-list span{color:var(--app-muted);font-size:13px}.field-list strong{text-align:right;overflow-wrap:anywhere;font-size:14px}.actions{display:grid;grid-template-columns:2fr 1fr;gap:10px}.actions ion-button{height:48px;--border-radius:13px}</style>
