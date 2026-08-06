@@ -40,15 +40,31 @@ if (Test-Path -LiteralPath $Artifacts) {
 }
 New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
 
-py -3 -m py_compile `
+# The tests import fastapi, which only exists in the venv -- the system `py -3`
+# fails with ModuleNotFoundError. Use the same interpreter for py_compile so a
+# release is validated against the version it will actually run under.
+$VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $VenvPython)) {
+  throw "Missing venv at $VenvPython. Create it with: py -3 -m venv .venv; .venv\Scripts\pip install -r requirements.txt"
+}
+
+& $VenvPython -m py_compile `
   (Join-Path $ProjectRoot "main.py") `
   (Join-Path $ProjectRoot "schemas.py") `
   (Join-Path $ProjectRoot "app\api\routes\health.py") `
   (Join-Path $ProjectRoot "app\api\routes\server_status.py")
 if ($LASTEXITCODE -ne 0) { throw "Backend validation failed" }
 
-py -3 -m unittest discover -s (Join-Path $ProjectRoot "tests") -t $ProjectRoot
-if ($LASTEXITCODE -ne 0) { throw "Backend tests failed" }
+# `discover -s <abs path> -t <root>` raises "Start directory is not importable"
+# because tests/ has no __init__.py. Running from the project root with a
+# relative -s is the form that actually works.
+Push-Location $ProjectRoot
+try {
+  & $VenvPython -m unittest discover -s tests
+  if ($LASTEXITCODE -ne 0) { throw "Backend tests failed" }
+} finally {
+  Pop-Location
+}
 
 function Invoke-FrontendBuild {
   param([string]$Root, [string]$Label)
