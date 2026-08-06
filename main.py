@@ -6384,8 +6384,13 @@ def list_sycm_collector_devices(_: AdminUser = Depends(get_current_user)):
     for row in rows:
         try:
             last_seen = datetime.fromisoformat(row["last_seen_at"])
+            # Rows written without an offset would raise TypeError on the
+            # comparison below, which the old `except ValueError` let escape as
+            # a 500. Treat a bare timestamp as already being Shanghai local.
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=now.tzinfo)
             online = last_seen >= now - timedelta(minutes=1)
-        except ValueError:
+        except (TypeError, ValueError):
             online = False
         result.append({
             "deviceId": row["device_id"][:8],
