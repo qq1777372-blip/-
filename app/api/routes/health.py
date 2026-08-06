@@ -11,7 +11,26 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 
-def create_health_router(*, engine: Engine, frontend_dist_dir: Path) -> APIRouter:
+def read_build_version(dist_dir: Path) -> dict[str, Any]:
+    """Report the version.json a deployed build left behind.
+
+    Missing or unparsable means the deploy did not finish, so it is an error and
+    not an "unknown" version: a release that cannot prove which build is live is
+    exactly what the readiness probe exists to catch.
+    """
+    try:
+        payload = json.loads((dist_dir / "version.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "error", "detail": type(exc).__name__}
+    return {"status": "ok", "version": str(payload.get("version", "unknown"))}
+
+
+def create_health_router(
+    *,
+    engine: Engine,
+    frontend_dist_dir: Path,
+    app_dist_dir: Path | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/health", tags=["health"])
 
     @router.get("/live", summary="Process liveness probe")
@@ -30,15 +49,12 @@ def create_health_router(*, engine: Engine, frontend_dist_dir: Path) -> APIRoute
         except Exception as exc:
             checks["database"] = {"status": "error", "detail": type(exc).__name__}
 
-        version_file = frontend_dist_dir / "version.json"
-        try:
-            version_payload = json.loads(version_file.read_text(encoding="utf-8"))
-            checks["frontend"] = {
-                "status": "ok",
-                "version": str(version_payload.get("version", "unknown")),
-            }
-        except (OSError, json.JSONDecodeError) as exc:
-            checks["frontend"] = {"status": "error", "detail": type(exc).__name__}
+        checks["frontend"] = read_build_version(frontend_dist_dir)
+        # The mobile App ships on its own cadence, so its build is reported as a
+        # separate check. Only wired up when a dist dir is supplied, which keeps
+        # callers that serve no App unaffected.
+        if app_dist_dir is not None:
+            checks["app"] = read_build_version(app_dist_dir)
 
         ready = all(check["status"] == "ok" for check in checks.values())
         payload = {

@@ -6174,7 +6174,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(create_health_router(engine=engine, frontend_dist_dir=FRONTEND_DIST_DIR))
+app.include_router(
+    create_health_router(
+        engine=engine,
+        frontend_dist_dir=FRONTEND_DIST_DIR,
+        app_dist_dir=APP_FRONTEND_DIST_DIR,
+    ),
+)
 app.include_router(
     create_server_status_router(
         engine=engine,

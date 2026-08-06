@@ -1,16 +1,39 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$Version,
-  [string]$DeployHost = "121.196.150.21",
-  [string]$DeployUser = "root",
-  [string]$SshKey = "C:\Users\Administrator\.ssh\xiaoxu.pem"
+  [string]$AppVersion = "",
+  [string]$DeployHost = "152.32.174.85",
+  [string]$DeployUser = "ubuntu",
+  [string]$SshKey = "D:\ServerKeys\xiaoxu-ucloud-ed25519"
 )
+
+# Build, package and deploy a release to production.
+#
+# The default target is the UCloud Hong Kong host that actually serves
+# xiaoxu666.asia. It used to default to the retired aliyun box (121.196.150.21 /
+# root / xiaoxu.pem), which meant a plain `.\release.ps1 -Version x` published to
+# the wrong machine.
+#
+# Two frontends ship from this repo: the PC console (frontend/ -> /ui/) and the
+# mobile App (app-frontend/ -> /app/). Note it is app-frontend/ and not app/,
+# which is already the backend Python package.
+#
+# The App is optional so this script keeps working before its source has been
+# recovered into the repo; when app-frontend/ is present an -AppVersion is
+# required, because the deployed build has to be able to prove which version it
+# is.
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $FrontendRoot = Join-Path $ProjectRoot "frontend"
+$AppRoot = Join-Path $ProjectRoot "app-frontend"
 $Artifacts = Join-Path $ProjectRoot ".release\$Version"
 $RemoteStage = "/tmp/ruoshop-release-$Version"
+
+$BuildApp = Test-Path -LiteralPath (Join-Path $AppRoot "package.json")
+if ($BuildApp -and [string]::IsNullOrWhiteSpace($AppVersion)) {
+  throw "app-frontend/ is present, so -AppVersion is required (e.g. -AppVersion 0.8.47-alpha)"
+}
 
 if (Test-Path -LiteralPath $Artifacts) {
   throw "Release artifact directory already exists: $Artifacts"
@@ -24,41 +47,70 @@ py -3 -m py_compile `
   (Join-Path $ProjectRoot "app\api\routes\server_status.py")
 if ($LASTEXITCODE -ne 0) { throw "Backend validation failed" }
 
-Push-Location $FrontendRoot
-try {
-  npm ci
-  if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
-  npm run build
-  if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
-} finally {
-  Pop-Location
+py -3 -m unittest discover -s (Join-Path $ProjectRoot "tests") -t $ProjectRoot
+if ($LASTEXITCODE -ne 0) { throw "Backend tests failed" }
+
+function Invoke-FrontendBuild {
+  param([string]$Root, [string]$Label)
+
+  Push-Location $Root
+  try {
+    npm ci
+    if ($LASTEXITCODE -ne 0) { throw "$Label npm ci failed" }
+    npm run build
+    if ($LASTEXITCODE -ne 0) { throw "$Label build failed" }
+  } finally {
+    Pop-Location
+  }
 }
 
-$VersionJson = @{
-  version = $Version
-  released_at = (Get-Date).ToString("o")
-  source = (git -C $ProjectRoot rev-parse --short HEAD 2>$null)
-} | ConvertTo-Json
-$Utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText(
-  (Join-Path $FrontendRoot "dist\version.json"),
-  $VersionJson,
-  $Utf8WithoutBom
-)
+function Write-VersionJson {
+  param([string]$DistDir, [string]$BuildVersion)
+
+  if (-not (Test-Path -LiteralPath $DistDir)) {
+    throw "Build output missing: $DistDir"
+  }
+  $payload = @{
+    version     = $BuildVersion
+    released_at = (Get-Date).ToString("o")
+    source      = (git -C $ProjectRoot rev-parse --short HEAD 2>$null)
+  } | ConvertTo-Json
+  $Utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText((Join-Path $DistDir "version.json"), $payload, $Utf8WithoutBom)
+}
+
+Invoke-FrontendBuild -Root $FrontendRoot -Label "PC frontend"
+$FrontendDist = Join-Path $FrontendRoot "dist"
+Write-VersionJson -DistDir $FrontendDist -BuildVersion $Version
 
 tar -czf (Join-Path $Artifacts "backend.tar.gz") -C $ProjectRoot `
   main.py schemas.py database.py models.py requirements.txt app alembic alembic.ini scripts tests
-tar -czf (Join-Path $Artifacts "frontend.tar.gz") -C (Join-Path $FrontendRoot "dist") .
+tar -czf (Join-Path $Artifacts "frontend.tar.gz") -C $FrontendDist .
+
+$Payload = @(
+  (Join-Path $Artifacts "backend.tar.gz"),
+  (Join-Path $Artifacts "frontend.tar.gz")
+)
+
+if ($BuildApp) {
+  Invoke-FrontendBuild -Root $AppRoot -Label "Mobile App"
+  # app-frontend/vite.config.ts writes to ../app-frontend-dist, matching the
+  # directory name main.py serves /app/ from.
+  $AppDist = Join-Path $ProjectRoot "app-frontend-dist"
+  Write-VersionJson -DistDir $AppDist -BuildVersion $AppVersion
+  tar -czf (Join-Path $Artifacts "app-frontend.tar.gz") -C $AppDist .
+  $Payload += (Join-Path $Artifacts "app-frontend.tar.gz")
+} else {
+  Write-Host "app-frontend/ not found; deploying backend and PC frontend only."
+}
+
+$Payload += (Join-Path $ProjectRoot "scripts\deploy_remote.sh")
 
 $Remote = "$DeployUser@$DeployHost"
 ssh -i $SshKey -o StrictHostKeyChecking=no $Remote "mkdir -p '$RemoteStage'"
-scp -i $SshKey -o StrictHostKeyChecking=no `
-  (Join-Path $Artifacts "backend.tar.gz") `
-  (Join-Path $Artifacts "frontend.tar.gz") `
-  (Join-Path $ProjectRoot "scripts\deploy_remote.sh") `
-  "${Remote}:${RemoteStage}/"
+scp -i $SshKey -o StrictHostKeyChecking=no $Payload "${Remote}:${RemoteStage}/"
 ssh -i $SshKey -o StrictHostKeyChecking=no $Remote `
-  "bash '$RemoteStage/deploy_remote.sh' '$Version' '$RemoteStage'"
+  "bash '$RemoteStage/deploy_remote.sh' '$Version' '$RemoteStage' '$AppVersion'"
 if ($LASTEXITCODE -ne 0) { throw "Remote deployment failed and rollback was requested" }
 
 Write-Host "Release $Version deployed and passed readiness checks."
