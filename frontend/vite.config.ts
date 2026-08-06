@@ -2,6 +2,41 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+const backend = 'http://127.0.0.1:8000'
+
+// Every backend prefix the PC console calls. Listed explicitly rather than
+// proxying `/` so the dev server keeps serving its own assets and HMR. Note
+// `/ui` is deliberately absent: it is this app's own base path.
+const apiPrefixes = [
+  '/account-usage-records',
+  '/admin',
+  '/admin-users',
+  '/api',
+  '/article-publisher',
+  '/audit-logs',
+  '/auth',
+  '/company-expenses',
+  '/custom-fields',
+  '/dashboard',
+  '/dingtalk-profits',
+  '/expense-categories',
+  '/health',
+  '/knowledge-api',
+  '/license-admin',
+  '/license-records',
+  '/mobile-devices',
+  '/peer-shops',
+  '/reader',
+  '/saved-links',
+  '/shop-records',
+  '/software-admin',
+  '/system-alerts',
+  '/task-bookkeeping',
+  '/ui-settings',
+  '/uploads',
+  '/warehouse',
+]
+
 // https://vite.dev/config/
 export default defineConfig({
   base: '/ui/',
@@ -13,16 +48,6 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: {
-      '/auth': 'http://127.0.0.1:8000',
-      '/dashboard': 'http://127.0.0.1:8000',
-      '/warehouse': 'http://127.0.0.1:8000',
-      '/shop-records': 'http://127.0.0.1:8000',
-      '/custom-fields': 'http://127.0.0.1:8000',
-      '/license-records': 'http://127.0.0.1:8000',
-      '/admin-users': 'http://127.0.0.1:8000',
-      '/admin': 'http://127.0.0.1:8000',
-      '/uploads': 'http://127.0.0.1:8000',
-    },
+    proxy: Object.fromEntries(apiPrefixes.map((prefix) => [prefix, backend])),
   },
 })

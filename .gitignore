@@ -4,6 +4,9 @@
 __pycache__/
 *.py[cod]
 *.db
+# WAL mode leaves these two beside every sqlite file; `*.db` misses them.
+*.db-shm
+*.db-wal
 uploads/
 backups/
 deploy-backups/
@@ -26,3 +29,9 @@ _live_backend_snapshot_*/
 _sycm_runtime_work/
 _server_sycm_sync_button_*.js
 *.before-*.db
+
+# local-only scratch: dev-server logs and curl session files. _dev_cookies.txt
+# holds a real session token, so it must never be committed.
+_dev_cookies.txt
+_dev_login.json
+_*dev*.log
