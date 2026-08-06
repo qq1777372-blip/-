@@ -739,3 +739,36 @@ export interface SycmShopSnapshot {
   overview?: Record<string, SycmOverviewMetric>
   sourceTree?: unknown[]
 }
+
+export interface SycmSourceNode {
+  pageName?: SycmOverviewMetric | { value?: string | null }
+  uv?: SycmOverviewMetric
+  payByrCnt?: SycmOverviewMetric
+  payAmt?: SycmOverviewMetric
+}
+
+export interface SycmSyncResult {
+  shopId?: string
+  shopName?: string
+  success?: boolean
+  error?: string | null
+}
+
+export interface SycmSyncRequest {
+  id: number
+  status: 'pending' | 'running' | 'completed' | 'failed' | string
+  requestedAt: string | null
+  claimedAt: string | null
+  completedAt: string | null
+  error: string | null
+  results: SycmSyncResult[]
+}
+
+export interface SycmCollectorDevice {
+  deviceId: string
+  deviceName: string | null
+  firstSeenAt: string | null
+  lastSeenAt: string | null
+  shopCount: number
+  online: boolean
+}

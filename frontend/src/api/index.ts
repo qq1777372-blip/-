@@ -754,3 +754,26 @@ export async function fetchSycmLatest(period: import('../types/api').SycmPeriod 
   })
   return data
 }
+
+export async function fetchSycmShopSnapshots(shopId: string, limit = 100) {
+  const { data } = await http.get<import('../types/api').SycmShopSnapshot[]>(
+    `/api/sycm/shops/${encodeURIComponent(shopId)}/snapshots`,
+    { params: { limit } },
+  )
+  return data
+}
+
+export async function fetchSycmLatestSyncRequest() {
+  const { data } = await http.get<import('../types/api').SycmSyncRequest | null>('/api/sycm/sync-requests/latest')
+  return data
+}
+
+export async function createSycmSyncRequest() {
+  const { data } = await http.post<import('../types/api').SycmSyncRequest>('/api/sycm/sync-requests')
+  return data
+}
+
+export async function fetchSycmCollectorDevices() {
+  const { data } = await http.get<import('../types/api').SycmCollectorDevice[]>('/api/sycm/collector-devices')
+  return data
+}
