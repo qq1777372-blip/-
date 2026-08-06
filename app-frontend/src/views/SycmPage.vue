@@ -67,6 +67,15 @@ const sum = (list: Shop[], field: string): number | null => {
 const scoped = computed(() => shopId.value ? shops.value.filter((shop) => shop.shopId === shopId.value) : shops.value)
 const freshness = computed(() => scoped.value.reduce((last, shop) => !last || shop.collectedAt > last ? shop.collectedAt : last, ''))
 const periodLabel = computed(() => periods.find(([value]) => value === period.value)?.[1] || '今日')
+// A task sits at pending until a collector claims it, so the status tab has to
+// name that state -- otherwise a queued-but-unclaimed sync is indistinguishable
+// from no sync at all.
+const syncStatusLabels: Record<string, string> = { pending: '排队中，等待采集端认领', running: '采集端正在采集', completed: '已完成', failed: '失败' }
+const syncStatusLabel = computed(() => syncStatusLabels[syncTask.value?.status || ''] || '')
+const syncEmptyHint = computed(() => syncTask.value?.status === 'pending'
+  ? '任务已排队，但还没有采集端认领。采集端需要在登录了生意参谋的电脑上运行，并配置相同的上传令牌。'
+  : syncTask.value?.status === 'running' ? '采集端正在采集，完成后会显示每家店铺的结果。'
+  : '同步后将在这里显示每个店铺的结果')
 const onlineCount = computed(() => devices.value.filter((device) => device.online).length)
 
 const kpis = computed(() => {
@@ -144,6 +153,10 @@ async function syncData() {
   try {
     const task = await api<SyncRequest>('/api/sycm/sync-requests', { method: 'POST' })
     syncTask.value = task
+    // Show the queued task straight away: the work is done by a separate
+    // collector program, so without this the button just spins for minutes with
+    // nothing on screen explaining what it is waiting for.
+    view.value = 'status'
     for (let attempt = 0; attempt < 90; attempt += 1) {
       const current = await api<SyncRequest | null>('/api/sycm/sync-requests/latest')
       syncTask.value = current
@@ -155,6 +168,9 @@ async function syncData() {
       if (current?.id === task.id && current.status === 'failed') throw new Error(current.error || '采集端同步失败')
       await wait(2000)
     }
+    // Falling out of the loop used to be silent, which read as "the button does
+    // nothing". Nobody claimed the task -- no collector is online.
+    throw new Error('等待采集端超时：任务已排队，但没有采集机认领。请确认采集程序正在运行。')
   } catch (error) {
     const message = error instanceof ApiError ? error.detail : error instanceof Error ? error.message : '同步失败'
     const toast = await toastController.create({ message, duration: 2200, color: 'danger' })
@@ -302,9 +318,9 @@ onMounted(() => load())
             <section class="sc-section">
               <header class="sc-section-head">
                 <h2>最近同步状态</h2>
-                <span>{{ syncTask ? `任务 #${syncTask.id ?? '--'}` : '暂无任务' }}</span>
+                <span>{{ syncTask ? `任务 #${syncTask.id ?? '--'} · ${syncStatusLabel}` : '暂无任务' }}</span>
               </header>
-              <div v-if="!syncTask?.results?.length" class="sc-empty">同步后将在这里显示每个店铺的结果</div>
+              <div v-if="!syncTask?.results?.length" class="sc-empty">{{ syncEmptyHint }}</div>
               <div v-else class="sc-status-list">
                 <div v-for="result in syncTask.results" :key="result.shopId" class="sc-status">
                   <span>{{ result.shopName || result.shopId }}</span>
