@@ -6343,13 +6343,26 @@ def serialize_sycm_sync_request(row: sqlite3.Row) -> dict[str, Any]:
 
 @app.post("/api/sycm/sync-requests", status_code=202)
 def create_sycm_sync_request(current_user: AdminUser = Depends(get_current_user)):
-    now = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+    now_dt = datetime.now(ZoneInfo("Asia/Shanghai"))
+    now = now_dt.isoformat()
+    # A pending request that nobody has claimed for more than 15 minutes means
+    # the collector is offline or misconfigured. Returning it forever blocks all
+    # future syncs, so expire it and let the user queue a fresh attempt.
+    # Running tasks have their own 15-minute reaper in the claim route; only
+    # stuck *pending* rows need reclaiming here.
+    pending_stale_before = (now_dt - timedelta(minutes=15)).isoformat()
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
+        connection.execute(
+            "UPDATE sycm_sync_requests SET status='failed', error='采集端未在15分钟内认领，已自动取消' "
+            "WHERE status='pending' AND requested_at < ?",
+            (pending_stale_before,),
+        )
         existing = connection.execute(
             "SELECT * FROM sycm_sync_requests WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if existing is not None:
+            connection.commit()
             return serialize_sycm_sync_request(existing)
         cursor = connection.execute(
             "INSERT INTO sycm_sync_requests(status, requested_by, requested_at) VALUES ('pending', ?, ?)",
