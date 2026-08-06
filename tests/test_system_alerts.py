@@ -34,20 +34,27 @@ class SystemAlertTests(unittest.TestCase):
         self.engine.dispose()
 
     def test_low_stock_alert_can_be_acknowledged_and_reopened(self) -> None:
+        # items/total are narrowed by the category filter, but the counts are
+        # deliberately global: they feed a badge that shows everything still
+        # outstanding, not just the tab being viewed. The fixture product has no
+        # cost price and no profit rows, so it also raises two data alerts.
         result = list_system_alerts(category="inventory", status_filter="open", db=self.db, _=self.user)
-        self.assertEqual(result["open_count"], 1)
+        self.assertEqual(result["total"], 1)
+        self.assertEqual([item["category"] for item in result["items"]], ["inventory"])
+        open_before = result["open_count"]
         alert_key = result["items"][0]["key"]
 
         acknowledged = update_system_alert_status(
             alert_key, SystemAlertStatusRequest(acknowledged=True), self.db, self.user,
         )
-        self.assertEqual(acknowledged["open_count"], 0)
+        self.assertEqual(acknowledged["open_count"], open_before - 1)
         self.assertEqual(acknowledged["acknowledged_count"], 1)
 
         reopened = update_system_alert_status(
             alert_key, SystemAlertStatusRequest(acknowledged=False), self.db, self.user,
         )
-        self.assertEqual(reopened["open_count"], 1)
+        self.assertEqual(reopened["open_count"], open_before)
+        self.assertEqual(reopened["acknowledged_count"], 0)
 
     def test_system_settings_are_persisted(self) -> None:
         payload = SystemSettingsResponse(session_duration_hours=24, license_expiry_days=45)
