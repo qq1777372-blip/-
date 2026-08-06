@@ -867,6 +867,85 @@ def serialize_software_admin_user(user: AdminUser) -> dict[str, Any]:
     return payload
 
 
+THUMBNAIL_CACHE_DIR = UPLOADS_DIR / ".thumbnails"
+THUMBNAIL_MAX_EDGE = 1280
+THUMBNAIL_QUALITY = 78
+# 只有超过这个大小才值得生成缩略图，小图直接回原文件
+THUMBNAIL_MIN_SOURCE_BYTES = 400_000
+
+
+def resolve_upload_file(relative_path: str) -> Path | None:
+    """把数据库里的相对路径解析成 uploads 内的真实文件，越界或缺失返回 None。"""
+    if not relative_path:
+        return None
+    candidate = (UPLOADS_DIR / relative_path).resolve()
+    try:
+        candidate.relative_to(UPLOADS_DIR.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def build_image_thumbnail(source: Path) -> Path | None:
+    """生成并缓存 JPEG 缩略图；失败时返回 None 由调用方回退原图。"""
+    try:
+        stat = source.stat()
+    except OSError:
+        return None
+
+    if stat.st_size < THUMBNAIL_MIN_SOURCE_BYTES:
+        return None
+
+    token = hashlib.sha256(
+        f"{source}|{stat.st_mtime_ns}|{stat.st_size}|{THUMBNAIL_MAX_EDGE}|{THUMBNAIL_QUALITY}".encode("utf-8")
+    ).hexdigest()[:32]
+    cached = THUMBNAIL_CACHE_DIR / f"{token}.jpg"
+    if cached.is_file():
+        return cached
+
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return None
+
+    try:
+        THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
+            image.thumbnail((THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE), Image.LANCZOS)
+            temporary = cached.with_suffix(".tmp")
+            image.save(temporary, format="JPEG", quality=THUMBNAIL_QUALITY, optimize=True, progressive=True)
+            temporary.replace(cached)
+    except Exception:
+        logger.warning("Failed to build thumbnail for %s", source, exc_info=True)
+        return None
+
+    return cached if cached.is_file() else None
+
+
+def image_file_response(source: Path, download_name: str | None, *, thumbnail: bool) -> FileResponse:
+    """thumbnail=True 时优先返回压缩图，无法生成则回退原图。"""
+    if thumbnail:
+        reduced = build_image_thumbnail(source)
+        if reduced is not None:
+            return FileResponse(
+                reduced,
+                media_type="image/jpeg",
+                content_disposition_type="inline",
+                headers={"Cache-Control": "private, max-age=604800"},
+            )
+
+    media_type, _ = mimetypes.guess_type(source.name)
+    return FileResponse(
+        source,
+        media_type=media_type or "application/octet-stream",
+        filename=download_name or source.name,
+        content_disposition_type="inline",
+    )
+
+
 def build_license_image_url(record: LicenseRecord) -> str | None:
     if not record.image_path:
         return None
@@ -5961,6 +6040,20 @@ def ensure_sycm_data_db() -> None:
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS sycm_shop_aliases (
+                account_id TEXT PRIMARY KEY,
+                canonical_shop_id TEXT NOT NULL,
+                shop_name TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_sycm_alias_canonical ON sycm_shop_aliases(canonical_shop_id)"
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS sycm_sync_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 status TEXT NOT NULL,
@@ -6091,6 +6184,49 @@ app.include_router(
 )
 
 
+def resolve_canonical_shop_id(connection: sqlite3.Connection, account_id: str) -> str:
+    """把千牛账号 ID（unb）解析成规范店铺 ID。
+
+    unb 是登录账号 ID，同一家店的主账号和子账号各有一个，直接当店铺主键会造成
+    同店重复。sycm_shop_aliases 记录 account_id -> canonical_shop_id 的映射；
+    未登记的账号返回自身，保证老客户端继续上传旧 ID 也能正常工作。
+    """
+    if not account_id:
+        return account_id
+    try:
+        row = connection.execute(
+            "SELECT canonical_shop_id FROM sycm_shop_aliases WHERE account_id=?",
+            (account_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return account_id
+    if row is None:
+        return account_id
+    canonical = str(row[0] if not isinstance(row, sqlite3.Row) else row["canonical_shop_id"] or "").strip()
+    return canonical or account_id
+
+
+def resolve_canonical_shop_ids(connection: sqlite3.Connection, account_ids: list[str]) -> dict[str, str]:
+    """批量解析，返回 account_id -> canonical_shop_id（未登记的映射到自身）。"""
+    mapping = {account_id: account_id for account_id in account_ids}
+    if not account_ids:
+        return mapping
+    placeholders = ",".join("?" for _ in account_ids)
+    try:
+        rows = connection.execute(
+            f"SELECT account_id, canonical_shop_id FROM sycm_shop_aliases WHERE account_id IN ({placeholders})",
+            tuple(account_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return mapping
+    for row in rows:
+        account_id = str(row[0] if not isinstance(row, sqlite3.Row) else row["account_id"])
+        canonical = str(row[1] if not isinstance(row, sqlite3.Row) else row["canonical_shop_id"] or "").strip()
+        if canonical:
+            mapping[account_id] = canonical
+    return mapping
+
+
 @app.post("/api/sycm/upload", status_code=202)
 async def upload_sycm_snapshot(
     request: Request,
@@ -6130,6 +6266,9 @@ async def upload_sycm_snapshot(
 
     received_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        # 子账号上传时归一到主店铺，避免同店因多个千牛账号重复建行
+        account_id = shop_id
+        shop_id = resolve_canonical_shop_id(connection, account_id)
         owner = connection.execute(
             "SELECT device_id FROM sycm_shop_owners WHERE shop_id=?", (shop_id,)
         ).fetchone()
@@ -6263,6 +6402,7 @@ async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sy
     device_name = str(payload.get("deviceName") or device_id).strip() if isinstance(payload, dict) else ""
     shop_ids = payload.get("shopIds", []) if isinstance(payload, dict) else []
     shop_ids = list(dict.fromkeys(str(value).strip() for value in shop_ids if str(value).strip())) if isinstance(shop_ids, list) else []
+    requested_account_ids = list(shop_ids)
     if not device_id or len(device_id) > 128 or not shop_ids:
         raise HTTPException(status_code=422, detail="deviceId and shopIds are required")
     now_dt = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -6272,6 +6412,9 @@ async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sy
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("BEGIN IMMEDIATE")
+        # 认领按规范店铺 ID，主/子账号不会各占一条归属记录
+        canonical_map = resolve_canonical_shop_ids(connection, requested_account_ids)
+        shop_ids = list(dict.fromkeys(canonical_map.get(value, value) for value in requested_account_ids))
         connection.execute(
             "INSERT INTO sycm_collector_devices(device_id, device_name, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(device_id) DO UPDATE SET device_name=excluded.device_name, last_seen_at=excluded.last_seen_at",
@@ -6315,7 +6458,15 @@ async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sy
         connection.commit()
         claimed = connection.execute("SELECT * FROM sycm_sync_requests WHERE id=?", (row["id"],)).fetchone()
     result = serialize_sycm_sync_request(claimed)
-    result["allowedShopIds"] = allowed_shop_ids
+    # 同时回传原始 account_id，兼容仍以 unb 匹配的采集端
+    allowed_set = set(allowed_shop_ids)
+    allowed_accounts = [
+        account_id
+        for account_id in requested_account_ids
+        if canonical_map.get(account_id, account_id) in allowed_set
+    ]
+    result["allowedShopIds"] = list(dict.fromkeys(allowed_shop_ids + allowed_accounts))
+    result["canonicalShopIds"] = allowed_shop_ids
     result["deviceId"] = device_id
     return result
 
@@ -6457,6 +6608,8 @@ def list_sycm_shop_snapshots(
     limit = max(1, min(limit, 500))
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
+        # 传入子账号 ID 时也能查到合并后的主店铺数据
+        shop_id = resolve_canonical_shop_id(connection, shop_id)
         rows = connection.execute(
             """
             SELECT * FROM sycm_snapshots WHERE shop_id=?
@@ -8739,6 +8892,9 @@ UI_TABLE_SETTING_KEYS = {
     "peer-shop-columns",
     "account-usage-columns",
     "mobile-device-columns",
+    # Shared 常用功能 layout for the mobile home tab. Stored once for everyone so
+    # every account sees the same grid; only superadmin may PUT it.
+    "home-modules",
 }
 
 
@@ -10873,6 +11029,7 @@ def get_license_record(
 )
 def get_license_image_file(
     record_id: int,
+    thumb: int = 0,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("viewer")),
 ):
@@ -10880,23 +11037,11 @@ def get_license_image_file(
     if not db_record.image_path:
         raise HTTPException(status_code=404, detail="License image not found")
 
-    image_file = (UPLOADS_DIR / db_record.image_path).resolve()
-    uploads_root = UPLOADS_DIR.resolve()
-    try:
-        image_file.relative_to(uploads_root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="License image not found") from exc
-
-    if not image_file.is_file():
+    image_file = resolve_upload_file(db_record.image_path)
+    if image_file is None:
         raise HTTPException(status_code=404, detail="License image not found")
 
-    media_type, _ = mimetypes.guess_type(image_file.name)
-    return FileResponse(
-        image_file,
-        media_type=media_type or "application/octet-stream",
-        filename=db_record.image_name or image_file.name,
-        content_disposition_type="inline",
-    )
+    return image_file_response(image_file, db_record.image_name, thumbnail=bool(thumb))
 
 
 @app.put(
@@ -11089,6 +11234,7 @@ def get_peer_shop(
 )
 def get_peer_shop_image_file(
     record_id: int,
+    thumb: int = 0,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("viewer")),
 ):
@@ -11096,23 +11242,11 @@ def get_peer_shop_image_file(
     if not db_record.image_path:
         raise HTTPException(status_code=404, detail="Peer-shop image not found")
 
-    image_file = (UPLOADS_DIR / db_record.image_path).resolve()
-    uploads_root = UPLOADS_DIR.resolve()
-    try:
-        image_file.relative_to(uploads_root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="Peer-shop image not found") from exc
-
-    if not image_file.is_file():
+    image_file = resolve_upload_file(db_record.image_path)
+    if image_file is None:
         raise HTTPException(status_code=404, detail="Peer-shop image not found")
 
-    media_type, _ = mimetypes.guess_type(image_file.name)
-    return FileResponse(
-        image_file,
-        media_type=media_type or "application/octet-stream",
-        filename=db_record.image_name or image_file.name,
-        content_disposition_type="inline",
-    )
+    return image_file_response(image_file, db_record.image_name, thumbnail=bool(thumb))
 
 
 @app.put(
