@@ -101,17 +101,37 @@ jobs:
         run: |
           STAGE_DIR="/tmp/ruoshop-release-$VERSION"
           install -m 700 -d ~/.ssh
-          # printf '%s' wrote the key with no trailing newline, which OpenSSH
-          # refuses to parse -- that was release 2026.08.07.21 dying with a bare
-          # exit 255. Adding one unconditionally is safe: a key ending in two
-          # newlines still parses, one ending in none never does.
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          # Two ways a pasted key arrives unusable, both fixed here:
+          #
+          # 1. No trailing newline. printf '%s' omitted it and OpenSSH refuses
+          #    to parse such a file -- release 2026.08.07.21 died on this with a
+          #    bare exit 255. Adding one unconditionally is safe: a key ending in
+          #    two newlines still parses, one ending in none never does.
+          # 2. CRLF line endings. Copying out of a Windows editor gives every
+          #    line a \r, which OpenSSH also rejects. Stripping CR is safe
+          #    because the key body is base64 and never contains one.
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
           # ssh itself reports every failure as exit 255, so check the key
           # parses before using it and say so plainly if it does not.
           if ! ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
-            echo "::error::PRODUCTION_SSH_KEY is not a usable private key. Paste the whole file D:\\ServerKeys\\xiaoxu-ucloud-ed25519 (7 lines, BEGIN and END lines included) -- not the .pub, and do not reflow the line breaks."
+            echo "::error::PRODUCTION_SSH_KEY is not a usable private key. Read the shape report below, then re-paste the whole file D:\\ServerKeys\\xiaoxu-ucloud-ed25519 -- not the .pub, and do not reflow the line breaks."
+            # Shape only: line counts and marker presence, never the key body.
+            # A valid ed25519 key for this host is 7 lines and 399 bytes.
+            echo "received: $(wc -l < ~/.ssh/deploy_key) lines, $(wc -c < ~/.ssh/deploy_key) bytes (expected 7 lines, ~399 bytes)"
+            head -n 1 ~/.ssh/deploy_key | grep -q -- '-----BEGIN .*PRIVATE KEY-----' \
+              && echo "BEGIN marker: present" \
+              || echo "BEGIN marker: MISSING -- the first line did not make it into the secret"
+            tail -n 1 ~/.ssh/deploy_key | grep -q -- '-----END .*PRIVATE KEY-----' \
+              && echo "END marker: present" \
+              || echo "END marker: MISSING -- the paste was cut short"
+            grep -q -- 'PUBLIC KEY' ~/.ssh/deploy_key \
+              && echo "this is a PUBLIC key: you pasted xiaoxu-ucloud-ed25519.pub instead of xiaoxu-ucloud-ed25519" \
+              || true
+            printf '%s' "$SSH_PRIVATE_KEY" | grep -q "$(printf '\r')" \
+              && echo "CR characters were present and have been stripped, so line endings alone are not the cause" \
+              || true
             exit 1
           fi
 
