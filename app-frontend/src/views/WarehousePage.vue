@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { IonContent, IonIcon, IonPage, IonRefresher, IonRefresherContent, IonSearchbar, alertController, toastController } from '@ionic/vue'
-import { addOutline, arrowForwardOutline, refreshOutline } from 'ionicons/icons'
+import { addOutline, refreshOutline } from 'ionicons/icons'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { api, ApiError } from '../api'
@@ -20,6 +20,10 @@ const warehouseFilter = ref('')
 const statusFilter = ref('')
 const labels: Record<Tab, string> = { stocks: '库存', warehouses: '仓库', products: '商品', inbound: '入库', outbound: '出库', movements: '流水' }
 const statusLabels: Record<string, string> = { pending: '待拣货', picking: '拣货中', checked: '已复核', packed: '已打包', shipped: '已发货', cancelled: '已取消', completed: '已完成' }
+// movement_type / source_type come back as backend enums (inbound, purchase...),
+// so they get mapped here rather than rendered raw as English.
+const movementLabels: Record<string, string> = { inbound: '入库', outbound: '出库', inbound_correction: '入库纠正' }
+const sourceLabels: Record<string, string> = { purchase: '采购', return: '退货', other: '其他' }
 const nextStatus: Record<string, string> = { pending: 'picking', picking: 'checked', checked: 'packed', packed: 'shipped' }
 const rows = computed(() => data.value[tab.value].filter((row) => { const keyword=query.value.trim().toLowerCase(); return (!keyword||Object.values(row).join(' ').toLowerCase().includes(keyword))&&(!warehouseFilter.value||String(row.warehouse_id)===warehouseFilter.value)&&(!statusFilter.value||row.status===statusFilter.value) }))
 const canWrite = computed(() => ['superadmin', 'admin', 'super_admin', 'editor'].includes(session.user?.role || ''))
@@ -30,7 +34,8 @@ watch(() => route.query.tab, (value) => { const requested = String(value || 'sto
 async function load(event?: { target: { complete: () => void } }) {
   try {
     const [summaryResult, warehouses, products, stocks, inbound, outbound, movements] = await Promise.all([
-      api<Record<string, number>>('/warehouse/summary'), api<Row[]>('/warehouse/warehouses'), api<Row[]>('/warehouse/products'),
+      api<Record<string, number>>('/warehouse/summary'),
+      api<Row[]>('/warehouse/warehouses'), api<Row[]>('/warehouse/products'),
       api<Row[]>('/warehouse/stocks'), api<Row[]>('/warehouse/inbound-orders'), api<Row[]>('/warehouse/outbound-orders'), api<Row[]>('/warehouse/movements'),
     ])
     summary.value = summaryResult
@@ -42,7 +47,7 @@ async function load(event?: { target: { complete: () => void } }) {
 }
 
 function title(row: Row) {
-  return row.product_name || row.name || row.order_no || row.sku || row.warehouse_name || row.movement_type || '仓储记录'
+  return row.product_name || row.name || row.order_no || row.sku || row.warehouse_name || movementLabels[row.movement_type] || row.movement_type || '仓储记录'
 }
 function subtitle(row: Row) {
   return [row.sku, row.code, row.warehouse_name, row.supplier, row.recipient_name, row.reference_no].filter(Boolean).join(' · ') || row.remark || '—'
@@ -53,6 +58,70 @@ function value(row: Row) {
   if (tab.value === 'outbound' || tab.value === 'inbound') return statusLabels[row.status] || row.status
   if (tab.value === 'products') return amount(row.cost_price || 0)
   return row.is_active === false ? '停用' : '启用'
+}
+// The numbers that used to sit in the metric strip, now shown one tab at a time
+// so each row of chrome earns its height. Counts come straight off the loaded
+// arrays where possible; the rest reuse /warehouse/summary, which is the same
+// source the strip used, so nothing here can drift from the backend's own totals.
+const tabDetail = computed(() => {
+  const s = summary.value
+  const list = data.value
+  if (tab.value === 'stocks') {
+    return `共 ${s.total_quantity ?? 0} 件 · 成本 ${amount(s.total_cost || 0)} · 预警 ${s.low_stock_count ?? 0} 项`
+  }
+  if (tab.value === 'warehouses') {
+    const active = list.warehouses.filter((row) => row.is_active !== false).length
+    return `启用 ${active} 个 · 停用 ${list.warehouses.length - active} 个`
+  }
+  if (tab.value === 'products') {
+    const active = list.products.filter((row) => row.is_active !== false).length
+    return `启用 ${active} 款 · 停用 ${list.products.length - active} 款`
+  }
+  if (tab.value === 'inbound') {
+    const done = list.inbound.filter((row) => row.status === 'completed').length
+    return `已完成 ${done} 单 · 进行中 ${list.inbound.length - done} 单 · 今日入库 ${s.today_inbound_quantity ?? 0} 件`
+  }
+  if (tab.value === 'outbound') {
+    return `待出库 ${s.pending_outbound_count ?? 0} 单 · 今日出库 ${s.today_outbound_quantity ?? 0} 件`
+  }
+  const plus = list.movements.filter((row) => Number(row.quantity_change) > 0).length
+  return `入库 ${plus} 条 · 出库 ${list.movements.length - plus} 条 · 今日 +${s.today_inbound_quantity ?? 0} / -${s.today_outbound_quantity ?? 0} 件`
+})
+
+// Second meta line per card. Every field here was checked against the response
+// schema, so an empty string means the record really has nothing to add rather
+// than a typo silently rendering blank.
+function cardDetail(row: Row) {
+  const parts: string[] = []
+  if (tab.value === 'stocks') {
+    const unit = row.unit || '件'
+    parts.push(`成本 ${amount(row.cost_price || 0)}/${unit}`)
+    parts.push(`库存值 ${amount((row.cost_price || 0) * (row.quantity || 0))}`)
+    if (row.specification) parts.push(row.specification)
+  } else if (tab.value === 'products') {
+    if (row.specification) parts.push(row.specification)
+    if (row.barcode) parts.push(`条码 ${row.barcode}`)
+    if (row.unit) parts.push(`单位 ${row.unit}`)
+    if (row.warning_quantity != null) parts.push(`预警 ${row.warning_quantity}`)
+  } else if (tab.value === 'warehouses') {
+    if (row.contact_name) parts.push(row.contact_name)
+    if (row.contact_phone) parts.push(row.contact_phone)
+    if (row.address) parts.push(row.address)
+  } else if (tab.value === 'inbound') {
+    if (row.source_type) parts.push(`来源 ${sourceLabels[row.source_type] || row.source_type}`)
+    if (row.operator_username) parts.push(`操作 ${row.operator_username}`)
+    if (row.completed_at) parts.push(`完成 ${String(row.completed_at).replace('T', ' ').slice(0, 16)}`)
+  } else if (tab.value === 'outbound') {
+    parts.push(row.delivery_method === 'pickup' ? '自提' : '快递')
+    if (row.carrier) parts.push(row.carrier)
+    if (row.tracking_no) parts.push(row.tracking_no)
+    if (row.recipient_phone) parts.push(row.recipient_phone)
+  } else {
+    if (row.movement_type) parts.push(movementLabels[row.movement_type] || row.movement_type)
+    if (row.quantity_after != null) parts.push(`变动后 ${row.quantity_after}`)
+    if (row.operator_username) parts.push(`操作 ${row.operator_username}`)
+  }
+  return parts.join(' · ')
 }
 function openCreate() { router.push(`/tabs/warehouse/form/${tab.value === 'warehouses' ? 'warehouse' : tab.value === 'products' ? 'product' : tab.value}`) }
 function openRow(row: Row) {
@@ -97,28 +166,47 @@ onMounted(load)
   <IonPage><PageHeader title="仓储管理" subtitle="库存、出入库和流水" back />
     <IonContent><IonRefresher slot="fixed" @ion-refresh="load"><IonRefresherContent /></IonRefresher>
       <main class="page-pad warehouse-page">
-        <section class="metric-strip">
-          <article class="metric"><span>库存数量</span><strong>{{ summary.total_quantity || 0 }} 件</strong></article>
-          <article class="metric"><span>库存成本</span><strong>{{ amount(summary.total_cost || 0) }}</strong></article>
-          <article class="metric"><span>库存预警</span><strong>{{ summary.low_stock_count || 0 }} 项</strong></article>
-          <article class="metric"><span>待出库</span><strong>{{ summary.pending_outbound_count || 0 }} 单</strong></article>
-          <article class="metric"><span>今日入库 / 出库</span><strong>{{ summary.today_inbound_quantity || 0 }} / {{ summary.today_outbound_quantity || 0 }}</strong></article>
-        </section>
-        <nav class="warehouse-tabs"><button v-for="key in (Object.keys(labels) as Tab[])" :key="key" :class="{ active: tab === key }" @click="tab = key">{{ labels[key] }}</button></nav>
+        <nav class="wh-tabs">
+          <button v-for="key in (Object.keys(labels) as Tab[])" :key="key" :class="{ active: tab === key }" @click="tab = key">
+            {{ labels[key] }}<em>{{ data[key].length }}</em>
+          </button>
+        </nav>
+        <p class="wh-detail">{{ tabDetail }}</p>
         <IonSearchbar v-model="query" placeholder="搜索商品、单号、仓库或物流" mode="ios" />
-        <div class="warehouse-filters"><select v-model="warehouseFilter"><option value="">全部仓库</option><option v-for="item in data.warehouses" :key="item.id" :value="String(item.id)">{{ item.name }}</option></select><select v-if="tab==='outbound'||tab==='inbound'" v-model="statusFilter"><option value="">全部状态</option><option v-for="(label,key) in statusLabels" :key="key" :value="key">{{ label }}</option></select></div>
-        <div class="list-toolbar"><b>{{ labels[tab] }}记录</b><button v-if="canCreate" @click="openCreate"><IonIcon :icon="addOutline" />新增</button><button v-else @click="() => load()"><IonIcon :icon="refreshOutline" />刷新</button></div>
-        <section class="compact-list warehouse-list">
-          <article v-for="(row, index) in rows" :key="String(row.id || index)" class="warehouse-row" @click="openRow(row)">
-            <span class="warehouse-icon"><img v-if="row.image_url" :src="row.image_url" alt="" /><template v-else>{{ labels[tab].slice(0, 1) }}</template></span>
-            <div class="warehouse-main"><h3>{{ title(row) }}</h3><p>{{ subtitle(row) }}</p><small v-if="row.created_at">{{ String(row.created_at).replace('T', ' ').slice(0, 16) }}</small><small v-if="(tab==='inbound'||tab==='outbound')&&row.items?.length" class="item-summary">{{ row.items.map((item:Row)=>`${item.sku||item.product_name} × ${item.quantity}`).join('；') }}</small></div>
-            <div class="warehouse-value"><strong>{{ value(row) }}</strong><IonIcon v-if="canWrite && ['warehouses','products'].includes(tab)" :icon="arrowForwardOutline" /></div>
-            <div v-if="tab==='stocks'" class="stock-detail">实际 {{ row.quantity??0 }} · 锁定 {{ row.locked_quantity??0 }} · 可用 {{ row.available_quantity??0 }} · 预警 {{ row.warning_quantity??0 }}</div>
-            <div v-if="tab==='inbound'&&canWrite&&row.status==='completed'" class="order-actions" @click.stop><button @click="openRow(row)">纠正</button><button class="danger" @click="cancelInbound(row)">撤销</button></div>
-            <div v-if="tab === 'outbound' && canWrite && !['shipped','cancelled'].includes(row.status)" class="order-actions" @click.stop>
-              <button v-if="nextStatus[row.status]" @click="updateOutbound(row, nextStatus[row.status])">{{ statusLabels[nextStatus[row.status]] }}</button>
-              <button class="danger" @click="updateOutbound(row, 'cancelled')">取消</button>
+        <div class="wh-controls">
+          <label class="wh-pick"><select v-model="warehouseFilter"><option value="">全部仓库</option><option v-for="item in data.warehouses" :key="item.id" :value="String(item.id)">{{ item.name }}</option></select></label>
+          <label v-if="tab==='outbound'||tab==='inbound'" class="wh-pick"><select v-model="statusFilter"><option value="">全部状态</option><option v-for="(label,key) in statusLabels" :key="key" :value="key">{{ label }}</option></select></label>
+          <button v-if="canCreate" class="wh-primary" @click="openCreate"><IonIcon :icon="addOutline" />新增</button>
+          <button v-else class="wh-ghost" @click="() => load()"><IonIcon :icon="refreshOutline" />刷新</button>
+        </div>
+        <section class="wh-list">
+          <article v-for="(row, index) in rows" :key="String(row.id || index)" class="wh-card" :class="{ 'is-low': tab === 'stocks' && row.is_low_stock }">
+            <div class="wh-top">
+              <span class="wh-thumb"><img v-if="row.image_url" :src="row.image_url" alt="" /><template v-else>{{ title(row).slice(0, 1) }}</template></span>
+              <div class="wh-body">
+                <h2>{{ title(row) }}</h2>
+                <p class="wh-meta">{{ subtitle(row) }}</p>
+                <p v-if="tab==='stocks'" class="wh-nums">实际 {{ row.quantity??0 }}<i>·</i>锁定 {{ row.locked_quantity??0 }}<i>·</i>可用 {{ row.available_quantity??0 }}<i>·</i>预警 {{ row.warning_quantity??0 }}</p>
+                <p v-if="(tab==='inbound'||tab==='outbound')&&row.items?.length" class="wh-nums">{{ row.items.map((item:Row)=>`${item.sku||item.product_name} × ${item.quantity}`).join('；') }}</p>
+                <p v-if="cardDetail(row)" class="wh-sub">{{ cardDetail(row) }}</p>
+                <div class="wh-price">
+                  <strong>{{ value(row) }}</strong>
+                  <span v-if="tab === 'stocks' && row.is_low_stock" class="low-flag">低于预警</span>
+                  <small v-if="row.created_at">{{ String(row.created_at).replace('T', ' ').slice(0, 16) }}</small>
+                </div>
+              </div>
             </div>
+            <footer v-if="canWrite && ['warehouses','products'].includes(tab)">
+              <button class="wh-act" @click="openRow(row)">编辑</button>
+            </footer>
+            <footer v-else-if="tab==='inbound'&&canWrite&&row.status==='completed'">
+              <button class="wh-act" @click="openRow(row)">纠正</button>
+              <button class="wh-act danger" @click="cancelInbound(row)">撤销</button>
+            </footer>
+            <footer v-else-if="tab === 'outbound' && canWrite && !['shipped','cancelled'].includes(row.status)">
+              <button v-if="nextStatus[row.status]" class="wh-act" @click="updateOutbound(row, nextStatus[row.status])">{{ statusLabels[nextStatus[row.status]] }}</button>
+              <button class="wh-act danger" @click="updateOutbound(row, 'cancelled')">取消</button>
+            </footer>
           </article>
           <div v-if="!rows.length" class="empty-state">暂无{{ labels[tab] }}数据</div>
         </section>
@@ -128,8 +216,66 @@ onMounted(load)
 </template>
 
 <style scoped>
-.warehouse-tabs{display:flex;gap:7px;overflow-x:auto;margin:14px 0 10px;padding-bottom:2px}.warehouse-tabs button{flex:none;border:1px solid var(--app-line);border-radius:999px;padding:8px 14px;color:var(--app-muted);background:var(--app-card)}.warehouse-tabs .active{color:#fff;border-color:#f97316;background:#f97316}.list-toolbar{display:flex;justify-content:space-between;align-items:center;margin:12px 2px 8px}.list-toolbar button{display:flex;align-items:center;gap:3px;padding:8px 12px;border:0;border-radius:10px;color:#fff;background:#f97316}.warehouse-list{border-radius:16px}.warehouse-row{display:grid;grid-template-columns:40px 1fr auto;gap:11px;align-items:center;padding:13px 12px;border-bottom:1px solid var(--app-line)}.warehouse-row:last-child{border-bottom:0}.warehouse-icon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;color:#f97316;background:#fff0e6;font-weight:700}.warehouse-main{min-width:0}.warehouse-main h3,.warehouse-main p{margin:0}.warehouse-main h3{font-size:15px}.warehouse-main p{margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--app-muted);font-size:12px}.warehouse-main small{display:block;margin-top:4px;color:var(--app-muted);font-size:10px}.warehouse-value{display:flex;align-items:center;gap:4px;color:#f97316}.warehouse-value strong{max-width:90px;text-align:right;font-size:13px}.order-actions{grid-column:2/4;display:flex;gap:8px}.order-actions button{padding:7px 11px;border:0;border-radius:9px;color:#fff;background:#f97316}.order-actions .danger{color:#ef4444;background:#fee2e2}.ion-palette-dark .warehouse-icon{background:#3b2416}.ion-palette-dark .order-actions .danger{background:#451a1a}
-.warehouse-icon img{width:100%;height:100%;object-fit:cover;border-radius:12px}.item-summary{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#475569!important}
-.stock-detail{grid-column:2/4;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding-top:3px;color:var(--app-muted);font-size:11px;line-height:1.45;white-space:nowrap}.warehouse-filters{display:flex;gap:8px;margin-top:5px}.warehouse-filters select{max-width:100%;padding:8px 10px;border:1px solid var(--app-line);border-radius:9px;color:var(--app-text);background:var(--app-card)}
-@media(max-width:380px){.warehouse-row{grid-template-columns:38px minmax(0,1fr) auto;gap:9px}.stock-detail{grid-template-columns:1fr 1fr;white-space:normal}.warehouse-value strong{max-width:64px}.warehouse-page{padding-inline:8px}}
+/* Modelled on the seller-app product list in the reference shot: underlined tabs
+   carrying their own counts, plain-text pickers, and one card per row whose title
+   is the loudest thing in it. No metric strip -- the counts live in the tabs. */
+.warehouse-page{padding-inline:12px}
+
+.wh-tabs{display:flex;gap:18px;overflow-x:auto;margin:2px 0 10px;border-bottom:1px solid var(--app-line)}
+.wh-tabs button{flex:none;position:relative;padding:9px 0 11px;border:0;color:var(--app-muted);background:transparent;font-size:15px}
+.wh-detail{margin:0 2px 10px;color:var(--app-muted);font-size:12px;line-height:1.5}
+.wh-sub{margin:4px 0 0;color:var(--app-muted);font-size:11px;line-height:1.5;word-break:break-all}
+.wh-card.is-low .wh-sub{color:#b45309}
+.wh-tabs em{margin-left:4px;font-style:normal;font-size:12px}
+.wh-tabs .active{color:var(--app-text);font-weight:700}
+.wh-tabs .active::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px;background:#f97316}
+
+.warehouse-page ion-searchbar{--background:var(--app-card);--box-shadow:none;--border-radius:12px;padding:0}
+
+.wh-controls{display:flex;align-items:center;gap:14px;margin:10px 2px 12px}
+/* Pickers read as text + caret like the reference, not as boxed selects. */
+.wh-pick{position:relative;display:flex;align-items:center}
+.wh-pick::after{content:'';margin-left:5px;width:0;height:0;border:4px solid transparent;border-top-color:var(--app-muted);translate:0 2px}
+.wh-pick select{max-width:120px;padding:0;border:0;outline:0;color:var(--app-text);background:transparent;font-size:14px;appearance:none}
+.wh-controls button{display:flex;align-items:center;gap:3px;margin-left:auto;padding:7px 13px;border:0;border-radius:9px;font-size:14px}
+.wh-primary{color:#fff;background:#f97316}
+.wh-ghost{color:var(--app-text);background:var(--app-card);border:1px solid var(--app-line)!important}
+
+.wh-list{display:grid;gap:10px;padding-bottom:6px}
+.wh-card{padding:13px;border:1px solid var(--app-line);border-radius:14px;background:var(--app-card)}
+.wh-card.is-low{border-color:#fca5a5}
+
+.wh-top{display:grid;grid-template-columns:60px minmax(0,1fr);gap:11px}
+.wh-thumb{width:60px;height:60px;display:grid;place-items:center;overflow:hidden;border-radius:9px;color:#f97316;background:#fff0e6;font-size:20px;font-weight:700}
+.wh-thumb img{width:100%;height:100%;object-fit:cover}
+.wh-card.is-low .wh-thumb{color:#dc2626;background:#fee2e2}
+
+.wh-body{min-width:0}
+/* The title is the element you scan for, so it wraps to two lines instead of
+   being clipped to one like every other field. */
+.wh-body h2{margin:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-size:15px;line-height:1.4}
+.wh-meta,.wh-nums{margin:5px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--app-muted);font-size:12px}
+.wh-nums i{margin:0 6px;font-style:normal;opacity:.45}
+.wh-price{display:flex;align-items:center;gap:7px;margin-top:7px}
+.wh-price strong{color:#f97316;font-size:16px}
+.wh-card.is-low .wh-price strong{color:#dc2626}
+.wh-price small{margin-left:auto;color:var(--app-muted);font-size:10px}
+.low-flag{padding:2px 6px;border-radius:6px;color:#dc2626;background:#fee2e2;font-size:10px;font-weight:600;white-space:nowrap}
+
+/* Actions sit on their own line at the card's foot, right-aligned, so the same
+   spot is tappable on every row. Only rendered where a real route backs it. */
+.wh-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:11px;padding-top:10px;border-top:1px solid var(--app-line)}
+.wh-act{padding:6px 15px;border:1px solid var(--app-line);border-radius:999px;color:var(--app-text);background:transparent;font-size:13px}
+.wh-act.danger{color:#dc2626;border-color:#fca5a5}
+
+.ion-palette-dark .wh-thumb{background:#3b2416}
+.ion-palette-dark .wh-card.is-low .wh-thumb,.ion-palette-dark .low-flag{background:#451a1a}
+
+@media(max-width:380px){
+  .warehouse-page{padding-inline:8px}
+  .wh-tabs{gap:13px}
+  .wh-top{grid-template-columns:52px minmax(0,1fr);gap:9px}
+  .wh-thumb{width:52px;height:52px;font-size:18px}
+  .wh-nums{white-space:normal}
+}
 </style>
