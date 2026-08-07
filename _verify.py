@@ -1,58 +1,47 @@
+"""Independent check of split_scan's CAN MOVE verdict.
+
+Deliberately not sharing code with split_scan.py: that tool has been wrong
+twice (once on the closure rule, once by ignoring already-extracted routers),
+and a second implementation is the only way to catch a third mistake.
+"""
 from __future__ import annotations
-import ast
+import ast, re
 from pathlib import Path
 
-MOVING = {
-    "frontend_index_response", "frontend_ui_response", "app_frontend_index_response",
-    "app_frontend_response", "is_bare_mobile_webview", "mobile_app_upgrade_redirect",
-    "build_login_redirect_url", "tutorials_index_response", "tutorials_site_response",
-    "shop_record_page", "license_page", "vue_ui_root", "legacy_mobile_app_root",
-    "legacy_mobile_app_page", "vue_ui_page", "mobile_app_root", "mobile_app_page",
-    "company_expenses_app_redirect", "company_expenses_app", "tutorials_root",
-    "tutorials_index", "tutorials_page", "login_page", "register_page",
+ROOT = Path(".")
+BATCH_ROUTES = {
+    "list_fields", "create_field_definition", "update_field_definition",
+    "reorder_field_definitions", "delete_field_definition",
+    "create_shop_record", "list_shop_records", "get_shop_record",
+    "update_shop_record", "delete_shop_record", "batch_delete_shop_records",
 }
-HELPERS = {
-    "frontend_index_response", "frontend_ui_response", "app_frontend_index_response",
-    "app_frontend_response", "is_bare_mobile_webview", "mobile_app_upgrade_redirect",
-    "build_login_redirect_url", "tutorials_index_response", "tutorials_site_response",
+CLAIMED_MOVABLE = {
+    "build_field_name", "get_field_or_404", "get_shop_record_or_404",
+    "is_empty_value", "list_field_definitions", "normalize_field_value",
+    "serialize_record", "sync_legacy_columns", "validate_record_values",
 }
 
 src = Path("main.py").read_text(encoding="utf-8").lstrip("﻿")
 tree = ast.parse(src)
+defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
-# who calls each helper, among defs that are NOT moving
-callers: dict[str, set[str]] = {h: set() for h in HELPERS}
-for n in tree.body:
-    if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        continue
-    if n.name in MOVING:
-        continue
-    for c in ast.walk(n):
-        if isinstance(c, ast.Name) and c.id in HELPERS and isinstance(c.ctx, ast.Load):
-            callers[c.id].add(n.name)
+def loads(node):
+    return {c.id for c in ast.walk(node) if isinstance(c, ast.Name) and isinstance(c.ctx, ast.Load)}
 
-# also check module-level code (outside any function) and lifespan
-toplevel: dict[str, list[int]] = {h: [] for h in HELPERS}
-for n in tree.body:
-    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        continue
-    for c in ast.walk(n):
-        if isinstance(c, ast.Name) and c.id in HELPERS and isinstance(c.ctx, ast.Load):
-            toplevel[c.id].append(c.lineno)
+moving = BATCH_ROUTES | CLAIMED_MOVABLE
+bad = []
+for helper in sorted(CLAIMED_MOVABLE):
+    callers = sorted(n for n, node in defs.items() if n != helper and helper in loads(node))
+    outside = [c for c in callers if c not in moving]
+    # already-extracted routers are a separate namespace: they receive helpers
+    # as kwargs from main.py, so a hit there also blocks the move.
+    in_routers = [
+        p.name for p in sorted((ROOT / "app/api/routes").glob("*.py"))
+        if re.search(rf"\b{re.escape(helper)}\b", p.read_text(encoding="utf-8"))
+    ]
+    verdict = "MOVE" if not outside and not in_routers else "BLOCKED"
+    if verdict == "BLOCKED":
+        bad.append(helper)
+    print(f"  {verdict:<8} {helper:<26} callers={len(callers)} outside={outside or '-'} routers={in_routers or '-'}")
 
-blocked = False
-for h in sorted(HELPERS):
-    ext = sorted(callers[h])
-    tl = toplevel[h]
-    if ext or tl:
-        blocked = True
-        print(f"BLOCKED  {h}")
-        if ext:
-            print(f"           external callers: {ext}")
-        if tl:
-            print(f"           module-level refs at lines: {tl}")
-    else:
-        print(f"ok       {h}")
-
-print()
-print("VERDICT:", "some helpers are shared -- do not move them" if blocked else "all 9 helpers are exclusive to this batch")
+print(f"\nagrees with split_scan: {not bad}" + (f"  disagreement: {bad}" if bad else ""))
