@@ -401,7 +401,17 @@ onBeforeUnmount(() => {
         <h3>店铺经营表现</h3>
         <span>{{ selectedShop ? '当前店铺' : '按支付金额排序' }}</span>
       </header>
-      <el-table v-if="overviewRows.length" :data="overviewRows" stripe class="sycm-table">
+      <!-- max-height, not an unbounded table: with 13 shops the two-line cells
+           grew the page past the viewport, so the whole layout scrolled instead
+           of just the rows. Element Plus keeps the header pinned and scrolls the
+           body, matching DashboardView's server-status table. -->
+      <el-table
+        v-if="overviewRows.length"
+        :data="overviewRows"
+        stripe
+        max-height="520"
+        class="sycm-table"
+      >
         <el-table-column label="店铺" min-width="220">
           <template #default="{ row }">
             <div class="sycm-shop-cell">
@@ -429,7 +439,13 @@ onBeforeUnmount(() => {
         <h3>流量来源构成</h3>
         <span>{{ period === 'today' ? '实时来源数据' : '历史周期暂未采集来源明细' }}</span>
       </header>
-      <el-table v-if="sourceRows.length" :data="sourceRows" stripe class="sycm-table">
+      <el-table
+        v-if="sourceRows.length"
+        :data="sourceRows"
+        stripe
+        max-height="520"
+        class="sycm-table"
+      >
         <el-table-column prop="name" label="来源渠道" min-width="200" />
         <el-table-column prop="uv" label="访客数" min-width="110" align="right" />
         <el-table-column prop="buyers" label="支付买家" min-width="110" align="right" />
