@@ -101,15 +101,33 @@ jobs:
         run: |
           STAGE_DIR="/tmp/ruoshop-release-$VERSION"
           install -m 700 -d ~/.ssh
-          printf '%s' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          # printf '%s' wrote the key with no trailing newline, which OpenSSH
+          # refuses to parse -- that was release 2026.08.07.21 dying with a bare
+          # exit 255. Adding one unconditionally is safe: a key ending in two
+          # newlines still parses, one ending in none never does.
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+          # ssh itself reports every failure as exit 255, so check the key
+          # parses before using it and say so plainly if it does not.
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+            echo "::error::PRODUCTION_SSH_KEY is not a usable private key. Paste the whole file D:\\ServerKeys\\xiaoxu-ucloud-ed25519 (7 lines, BEGIN and END lines included) -- not the .pub, and do not reflow the line breaks."
+            exit 1
+          fi
+
+          if ! ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+            echo "::error::ssh-keyscan got nothing from $DEPLOY_HOST. Check PRODUCTION_HOST and that the host allows inbound SSH from GitHub runners."
+            exit 1
+          fi
+          # BatchMode makes ssh fail instead of waiting on a prompt no one can
+          # answer in CI.
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o BatchMode=yes"
           # ubuntu, not root: deploy/README.md records the host as
           # ubuntu@152.32.174.85 and scripts/release.ps1 -- the deploy path that
           # already works -- defaults to DeployUser=ubuntu. deploy_remote.sh is
           # written for exactly that shape: an unprivileged login user that
           # escalates with sudo for all 37 of its writes.
-          ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" "mkdir -p '$STAGE_DIR'"
-          scp -i ~/.ssh/deploy_key backend.tar.gz frontend.tar.gz app-frontend.tar.gz ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
-          scp -i ~/.ssh/deploy_key scripts/deploy_remote.sh ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
-          ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" "bash '$STAGE_DIR/deploy_remote.sh' '$VERSION' '$STAGE_DIR' '$VERSION'"
+          ssh $SSH_OPTS ubuntu@"$DEPLOY_HOST" "mkdir -p '$STAGE_DIR'"
+          scp $SSH_OPTS backend.tar.gz frontend.tar.gz app-frontend.tar.gz ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
+          scp $SSH_OPTS scripts/deploy_remote.sh ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
+          ssh $SSH_OPTS ubuntu@"$DEPLOY_HOST" "bash '$STAGE_DIR/deploy_remote.sh' '$VERSION' '$STAGE_DIR' '$VERSION'"
