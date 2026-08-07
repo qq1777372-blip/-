@@ -6,16 +6,42 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from app.api.routes.warehouse import create_warehouse_router
 from database import Base
 from main import (
-    cancel_warehouse_inbound_order,
-    create_warehouse_inbound_order,
-    create_warehouse_outbound_order,
-    update_warehouse_inbound_order,
-    update_warehouse_outbound_status,
+    TASK_BOOKKEEPING_TIMEZONE,
+    UPLOADS_DIR,
+    WAREHOUSE_PRODUCT_UPLOAD_DIR,
+    commit_session,
+    get_db,
+    require_role,
+    write_audit_log,
 )
 from models import AdminUser, Warehouse, WarehouseProduct, WarehouseStock, WarehouseStockMovement
 from schemas import WarehouseInboundOrderCreate, WarehouseOutboundOrderCreate, WarehouseOutboundStatusUpdate
+
+# The handlers are closures inside create_warehouse_router now, so they cannot be
+# imported by name. Build the router once with the same dependencies main.py
+# passes and pull the endpoints off it -- that keeps these tests exercising the
+# real wiring instead of a stubbed copy.
+_handlers = {
+    route.endpoint.__name__: route.endpoint
+    for route in create_warehouse_router(
+        get_db=get_db,
+        require_role=require_role,
+        write_audit_log=write_audit_log,
+        commit_session=commit_session,
+        timezone=TASK_BOOKKEEPING_TIMEZONE,
+        uploads_dir=UPLOADS_DIR,
+        product_upload_dir=WAREHOUSE_PRODUCT_UPLOAD_DIR,
+    ).routes
+}
+
+cancel_warehouse_inbound_order = _handlers["cancel_warehouse_inbound_order"]
+create_warehouse_inbound_order = _handlers["create_warehouse_inbound_order"]
+create_warehouse_outbound_order = _handlers["create_warehouse_outbound_order"]
+update_warehouse_inbound_order = _handlers["update_warehouse_inbound_order"]
+update_warehouse_outbound_status = _handlers["update_warehouse_outbound_status"]
 
 
 class WarehouseWorkflowTests(unittest.TestCase):
