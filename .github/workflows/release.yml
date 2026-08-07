@@ -66,16 +66,45 @@ jobs:
           tar -czf frontend.tar.gz -C frontend/dist .
           tar -czf app-frontend.tar.gz -C app-frontend-dist .
 
-      - name: Upload and deploy
+      # An undefined secret renders as an empty string rather than failing, so
+      # release 2026.08.07.20 died here in 0s with nothing but "exit code 1":
+      # ssh-keyscan was handed an empty host and bailed before touching the
+      # network. Check both secrets up front and say which one is missing.
+      - name: Check deploy secrets
         env:
           SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.PRODUCTION_HOST }}
         run: |
+          missing=0
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "::error::PRODUCTION_HOST is empty. Set it in Settings > Environments > production (host or IP only, no root@ and no port)."
+            missing=1
+          fi
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "::error::PRODUCTION_SSH_KEY is empty. Set it in Settings > Environments > production (whole private key, including the BEGIN and END lines)."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Both deploy secrets are present."
+
+      - name: Upload and deploy
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.PRODUCTION_HOST }}
+          # Passed as env rather than interpolated into the commands below: the
+          # version is free text from workflow_dispatch, and `${{ }}` inside a
+          # run block is substituted before the shell sees it, so a crafted
+          # value would run as code on the production host.
+          VERSION: ${{ inputs.version }}
+        run: |
+          STAGE_DIR="/tmp/ruoshop-release-$VERSION"
           install -m 700 -d ~/.ssh
           printf '%s' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-          ssh -i ~/.ssh/deploy_key root@"$DEPLOY_HOST" "mkdir -p /tmp/ruoshop-release-${{ inputs.version }}"
-          scp -i ~/.ssh/deploy_key backend.tar.gz frontend.tar.gz app-frontend.tar.gz root@"$DEPLOY_HOST":/tmp/ruoshop-release-${{ inputs.version }}/
-          scp -i ~/.ssh/deploy_key scripts/deploy_remote.sh root@"$DEPLOY_HOST":/tmp/ruoshop-release-${{ inputs.version }}/
-          ssh -i ~/.ssh/deploy_key root@"$DEPLOY_HOST" "bash /tmp/ruoshop-release-${{ inputs.version }}/deploy_remote.sh '${{ inputs.version }}' '/tmp/ruoshop-release-${{ inputs.version }}' '${{ inputs.version }}'"
+          ssh -i ~/.ssh/deploy_key root@"$DEPLOY_HOST" "mkdir -p '$STAGE_DIR'"
+          scp -i ~/.ssh/deploy_key backend.tar.gz frontend.tar.gz app-frontend.tar.gz root@"$DEPLOY_HOST":"$STAGE_DIR"/
+          scp -i ~/.ssh/deploy_key scripts/deploy_remote.sh root@"$DEPLOY_HOST":"$STAGE_DIR"/
+          ssh -i ~/.ssh/deploy_key root@"$DEPLOY_HOST" "bash '$STAGE_DIR/deploy_remote.sh' '$VERSION' '$STAGE_DIR' '$VERSION'"
