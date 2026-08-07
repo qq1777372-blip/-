@@ -14,13 +14,24 @@ const MAX_ITEMS = 11
 // hiding a button.
 const SHARED_SETTING_PATH = '/ui-settings/home-modules'
 
+// The five warehouse tiles collapsed into one entry, but a saved layout (shared
+// setting or localStorage cache) can still name any of the old keys. Mapping them
+// here means no migration has to run and no stored value has to be rewritten.
+const KEY_ALIASES: Record<string, string> = {
+  'warehouse-stock': 'warehouse',
+  'warehouse-inbound': 'warehouse',
+  'warehouse-outbound': 'warehouse',
+  'warehouse-movements': 'warehouse',
+  'warehouse-master': 'warehouse',
+}
+
 export const defaultHomeKeys = [
   'sycm',
   'company-expenses',
   'tasks',
   'profits',
   'shops',
-  'warehouse-stock',
+  'warehouse',
   'links',
   'knowledge',
 ]
@@ -87,7 +98,18 @@ export function resolveHomeModules(
   for (const item of appModules) {
     if (canOpenModule(item, role, can)) allowed.set(item.key, item)
   }
-  return keys.map((key) => allowed.get(key)).filter((item): item is AppModule => Boolean(item))
+  // Dedupe after aliasing: a layout saved before the warehouse tiles merged can
+  // name two old keys that now resolve to the same entry, which would otherwise
+  // render the tile twice.
+  const seen = new Set<string>()
+  const resolved: AppModule[] = []
+  for (const key of keys) {
+    const item = allowed.get(KEY_ALIASES[key] || key)
+    if (!item || seen.has(item.key)) continue
+    seen.add(item.key)
+    resolved.push(item)
+  }
+  return resolved
 }
 
 export { MAX_ITEMS as maxHomeModules }

@@ -5,6 +5,7 @@ import { addCircleOutline, chatbubbleEllipsesOutline, documentTextOutline, image
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { api, ApiError } from '../api'
+import { plainText } from '../markdown'
 import { session } from '../session'
 
 export type SavedLink = {
@@ -28,9 +29,7 @@ export type SavedLink = {
 }
 
 type Tab = 'latest'|'with-images'|'mine'
-type DescriptionSegment = {type:'text'|'link';value:string}
 const urlPattern=/https?:\/\/[^\s<]+/g
-const trailingUrlPunctuation=new Set('.,!?;:)"\'}]>，。；：！？）】》、'.split(''))
 const router=useRouter()
 const records=ref<SavedLink[]>([])
 const query=ref('')
@@ -94,23 +93,6 @@ function category(item:SavedLink){const value=String(item.category||'').trim();r
 function pushLabel(item:SavedLink){return item.push_status==='scheduled'?'已定时':item.push_status==='sending'?'推送中':item.push_status==='sent'?'已推送':item.push_status==='failed'?'推送失败':''}
 function pushClass(item:SavedLink){return item.push_status?`saved-link-post__badge--${item.push_status}`:''}
 function galleryClass(item:SavedLink){return item.images.length===1?'saved-link-gallery--single':item.images.length===2?'saved-link-gallery--double':''}
-function descriptionSegments(value?:string){
-  const text=value||''
-  const segments:DescriptionSegment[]=[]
-  let cursor=0
-  for(const match of text.matchAll(urlPattern)){
-    const start=match.index||0
-    if(start>cursor)segments.push({type:'text',value:text.slice(cursor,start)})
-    let link=match[0]
-    let suffix=''
-    while(link&&trailingUrlPunctuation.has(link.at(-1)||'')){suffix=(link.at(-1)||'')+suffix;link=link.slice(0,-1)}
-    if(link)segments.push({type:'link',value:link})
-    if(suffix)segments.push({type:'text',value:suffix})
-    cursor=start+match[0].length
-  }
-  if(cursor<text.length)segments.push({type:'text',value:text.slice(cursor)})
-  return segments
-}
 function descriptionHasUrl(value?:string){urlPattern.lastIndex=0;return urlPattern.test(value||'')}
 function selectTab(key:Tab){tab.value=key;query.value='';nextTick(()=>feedScroll.value?.scrollTo({top:0,behavior:'auto'}))}
 onMounted(load)
@@ -170,12 +152,7 @@ onMounted(load)
 
                   <div class="saved-link-post__body">
                     <button class="saved-link-post__title" @click="router.push(`/tabs/detail/links/${item.id}`)">{{ item.title }}</button>
-                    <div v-if="item.description" class="saved-link-post__description">
-                      <template v-for="(segment,index) in descriptionSegments(item.description)" :key="`${item.id}-description-${index}`">
-                        <a v-if="segment.type==='link'" class="saved-link-post__description-link" :href="segment.value" target="_blank" rel="noopener noreferrer" @click.stop>{{ segment.value }}</a>
-                        <span v-else>{{ segment.value }}</span>
-                      </template>
-                    </div>
+                    <div v-if="plainText(item.description)" class="saved-link-post__description">{{ plainText(item.description) }}</div>
                   </div>
                   <button v-if="item.url&&!descriptionHasUrl(item.description)" class="saved-link-post__url saved-link-native-url" @click="router.push(`/tabs/detail/links/${item.id}`)">
                     <strong class="saved-link-post__url-host">{{ host(item.url) }}</strong>

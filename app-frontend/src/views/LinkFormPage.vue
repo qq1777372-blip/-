@@ -357,7 +357,7 @@ onUnmounted(() => {
       <div v-if="loading" class="editor-loading"><IonSpinner />正在加载</div>
       <main v-else class="editor">
         <section class="editor-meta">
-          <input v-model="form.title" class="editor-title" maxlength="100" :placeholder="articleMode ? '文章标题' : '帖子标题'">
+          <input v-model="form.title" class="editor-title" :class="{ 'is-missing': !form.title.trim() }" maxlength="100" :placeholder="articleMode ? '文章标题' : '帖子标题'">
           <div class="editor-meta-row">
             <input v-model="form.category" maxlength="50" :placeholder="articleMode ? '分类，例如：店铺教程' : '分类，例如：工作安排'">
             <input v-if="!articleMode" v-model.number="form.sort_order" type="number" inputmode="numeric" min="0" max="9999" placeholder="排序">
@@ -448,6 +448,7 @@ onUnmounted(() => {
       </main>
     </IonContent>
     <footer class="editor-footer">
+      <p v-if="!form.title.trim()" class="editor-footer-hint">请先填写最上方的{{ articleMode ? '文章标题' : '帖子标题' }}</p>
       <button @click="router.back()">取消</button>
       <button class="primary" :disabled="!canSave" @click="save">{{ saving ? '保存中…' : articleMode ? (id ? '保存修改' : '发布文章') : '保存帖子' }}</button>
     </footer>
@@ -460,7 +461,12 @@ onUnmounted(() => {
 .editor section{padding:14px;border:1px solid var(--app-line);border-radius:16px;background:var(--app-card)}
 
 .editor-meta{display:grid;gap:10px}
-.editor-title{width:100%;box-sizing:border-box;padding:6px 0;border:0;border-bottom:1px solid var(--app-line);outline:0;color:var(--app-text);background:transparent;font:700 19px inherit}
+/* Title is the only required field, so it gets at least as much visual weight as
+   the optional category below it. It used to be borderless on a transparent
+   background, which read as a section label -- people typed the title into the
+   category box instead and then could not work out why 发布 stayed greyed out. */
+.editor-title{width:100%;box-sizing:border-box;padding:11px;border:1px solid var(--app-line);border-radius:11px;outline:0;color:var(--app-text);background:var(--ion-background-color);font:700 19px inherit}
+.editor-title.is-missing{border-color:#e5484d}
 .editor-meta-row{display:grid;grid-template-columns:1fr;gap:10px}
 .editor-meta-row:has(input+input){grid-template-columns:2fr 1fr}
 .editor-meta-row input{width:100%;box-sizing:border-box;padding:11px;border:1px solid var(--app-line);border-radius:11px;outline:0;color:var(--app-text);background:var(--ion-background-color);font:16px inherit}
@@ -517,6 +523,8 @@ onUnmounted(() => {
 .editor-footer button{height:46px;border:1px solid var(--app-line);border-radius:13px;color:var(--app-text);background:transparent;font:600 16px inherit}
 .editor-footer .primary{color:#fff;border-color:#1677ff;background:#1677ff}
 .editor-footer button:disabled{opacity:.5}
+/* Spans both columns so it reads as a caption for the row, not a third button. */
+.editor-footer-hint{grid-column:1/-1;margin:0 0 2px;color:#d4380d;font-size:13px}
 .ion-palette-dark .editor-pick{background:#142b49}
 .ion-palette-dark .editor-pending-note{border-color:#1e3a5f!important;background:#132338!important;color:#93c5fd}
 .ion-palette-dark .editor-pending-note button{border-color:#1e40af;color:#93c5fd;background:#0f1e33}

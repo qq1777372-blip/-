@@ -80,6 +80,22 @@ export function parseContent(value?: string, imageAltFallback = '配图') {
   return blocks
 }
 
+// One-line summary for list rows: the words, without any of the markup.
+//
+// Built on parseContent rather than its own set of regexes so the list and the
+// reader can never disagree about what counts as markup -- add a syntax there
+// and this follows automatically. Image blocks are dropped: the row already
+// shows them in its gallery, so repeating them as alt text reads as noise.
+export function plainText(value?: string) {
+  return parseContent(value)
+    .filter((block) => block.type === 'paragraph')
+    .flatMap((block) => block.segments || [])
+    .map((segment) => (segment.type === 'link' ? segment.label || segment.value : segment.value))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function firstUrl(value: string) {
   return value.match(/https?:\/\/[^\s<]+/i)?.[0] || null
 }

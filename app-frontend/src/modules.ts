@@ -5,20 +5,16 @@ import {
   calculatorOutline,
   cubeOutline,
   documentTextOutline,
-  downloadOutline,
   hardwareChipOutline,
   keyOutline,
-  layersOutline,
   linkOutline,
   peopleOutline,
   personAddOutline,
   phonePortraitOutline,
-  sendOutline,
   serverOutline,
   settingsOutline,
   shieldCheckmarkOutline,
   storefrontOutline,
-  swapHorizontalOutline,
 } from 'ionicons/icons'
 
 export type AppModule = {
@@ -53,11 +49,10 @@ export const appModules: AppModule[] = [
   { key: 'account-usage', title: '账号使用记录', subtitle: '内部账号和设备使用', permission: 'account_usage', icon: peopleOutline, color: '#0f766e', route: '/tabs/list/account-usage', group: '店铺管理' },
   { key: 'devices', title: '手机设备', subtitle: '登录设备管理', permission: 'mobile_devices', icon: phonePortraitOutline, color: '#06b6d4', route: '/tabs/list/devices', group: '店铺管理' },
 
-  { key: 'warehouse-stock', title: '库存总览', subtitle: '现有库存与预警', permission: 'warehouse', icon: cubeOutline, color: '#f97316', route: '/tabs/module/warehouse?tab=stocks', group: '仓储管理' },
-  { key: 'warehouse-inbound', title: '入库管理', subtitle: '采购及其他入库', permission: 'warehouse', icon: downloadOutline, color: '#16a34a', route: '/tabs/module/warehouse?tab=inbound', group: '仓储管理' },
-  { key: 'warehouse-outbound', title: '出库发货', subtitle: '出库单与物流状态', permission: 'warehouse', icon: sendOutline, color: '#2563eb', route: '/tabs/module/warehouse?tab=outbound', group: '仓储管理' },
-  { key: 'warehouse-movements', title: '库存流水', subtitle: '库存增减明细', permission: 'warehouse', icon: swapHorizontalOutline, color: '#7c3aed', route: '/tabs/module/warehouse?tab=movements', group: '仓储管理' },
-  { key: 'warehouse-master', title: '基础资料', subtitle: '仓库和商品资料', permission: 'warehouse', icon: layersOutline, color: '#d97706', route: '/tabs/module/warehouse?tab=warehouses', group: '仓储管理' },
+  // One entry, not one per tab. WarehousePage already carries its own tab bar
+  // (库存/仓库/商品/入库/出库/流水), so five tiles opening the same page only made
+  // the grid wrap 4+1 and hid the fact that 商品 had no tile at all.
+  { key: 'warehouse', title: '仓储管理', subtitle: '库存、出入库与基础资料', permission: 'warehouse', icon: cubeOutline, color: '#f97316', route: '/tabs/module/warehouse', group: '仓储管理' },
 
   { key: 'knowledge', title: '知识问答', subtitle: '问答、管理与数据质量', icon: hardwareChipOutline, color: '#7c3aed', route: '/tabs/module/knowledge', group: '工具' },
   { key: 'audit-logs', title: '安全日志', subtitle: '登录与敏感操作记录', roles: ['superadmin'], icon: shieldCheckmarkOutline, color: '#ef4444', route: '/tabs/list/audit-logs', group: '系统管理' },

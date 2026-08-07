@@ -110,8 +110,10 @@
 .saved-link-post__title{white-space:normal;font-size:17px;line-height:1.45}
 .saved-link-post__description{-webkit-line-clamp:3;font-size:14px;line-height:1.65}
 .saved-link-post__url{border-radius:6px;padding:9px 10px}
-.saved-link-gallery,.saved-link-gallery--double{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:100%}
-.saved-link-gallery--single{grid-template-columns:minmax(0,1fr);max-width:280px}
+/* One image gets the same cell as three, so a row's height does not depend on
+   how many pictures it happens to carry. It used to stretch to 280px wide,
+   which made a single-image post tower over its neighbours. */
+.saved-link-gallery,.saved-link-gallery--single,.saved-link-gallery--double{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:100%}
 .saved-link-gallery__item{border-radius:6px}
 .saved-link-post__footer{flex-wrap:nowrap;align-items:center;margin-top:8px}
 .saved-link-post__actions{flex-wrap:nowrap;margin-left:auto}
