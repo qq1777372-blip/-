@@ -41,7 +41,10 @@ const sessionDialogVisible = ref(false)
 const totpDialogVisible = ref(false)
 const mobileMenuVisible = ref(false)
 const desktopSidebarCollapsed = ref(false)
-const webVersion = '2026.07.28.19'
+// Read at runtime from the version.json the release stamps into dist/, rather
+// than a literal someone has to remember to bump. The literal had drifted to
+// 2026.07.28.19 while the deployed build was 2026.08.07.24.
+const webVersion = ref('')
 const openAlertCount = ref(0)
 const unreadAlertCount = ref(0)
 const alertPreview = ref<SystemAlertItem[]>([])
@@ -190,7 +193,22 @@ function getAlertCategoryLabel(category: SystemAlertItem['category']) {
   return ({ inventory: '库存', outbound: '出库', license: '执照', task: '任务', security: '安全' })[category]
 }
 
+async function loadWebVersion() {
+  // BASE_URL is '/ui/' in a build and '/' under `npm run dev`, where no
+  // version.json exists -- the catch leaves the label hidden rather than
+  // showing a wrong number.
+  try {
+    const response = await fetch(`${import.meta.env.BASE_URL}version.json`, { cache: 'no-store' })
+    if (!response.ok) return
+    const payload = await response.json()
+    if (typeof payload?.version === 'string') webVersion.value = payload.version
+  } catch {
+    // leave blank
+  }
+}
+
 onMounted(refreshAlertCount)
+onMounted(loadWebVersion)
 
 watch(alertPopoverVisible, (visible) => {
   if (!visible) showAllAlerts.value = false
@@ -379,7 +397,7 @@ async function handleUserCommand(command: string | number | object) {
         </el-sub-menu>
       </el-menu>
 
-      <div class="layout-version">Web v{{ webVersion }}</div>
+      <div v-if="webVersion" class="layout-version">Web v{{ webVersion }}</div>
 
       <button type="button" class="aside-collapse-button" @click="toggleDesktopSidebar">
         <el-icon class="aside-collapse-button__icon">
