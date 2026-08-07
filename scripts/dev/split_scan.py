@@ -151,6 +151,28 @@ def main() -> int:
 
     staying_names = {row[0] for row in staying}
 
+    # Routers already split out receive helpers from main.py as keyword
+    # arguments, so main.py's own call sites are not the whole picture. Moving a
+    # helper that an existing router still expects breaks that router instead of
+    # main.py -- resolve_upload_file and image_file_response looked free here
+    # while peer_shops.py was using both.
+    external_users: dict[str, list[str]] = {}
+    routes_dir = ROOT / "app" / "api" / "routes"
+    for path in sorted(routes_dir.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        try:
+            other = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        used_there = {
+            child.id
+            for child in ast.walk(other)
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+        }
+        for name in used_there:
+            external_users.setdefault(name, []).append(path.name)
+
     def users_of(target: str) -> list[str]:
         out = []
         for name, node in defs.items():
@@ -158,6 +180,9 @@ def main() -> int:
                 continue
             if target in names_loaded(node):
                 out.append(name)
+        # Prefixed so the report shows which file blocks the move, and so these
+        # can never be mistaken for a def inside main.py.
+        out.extend(f"router:{filename}" for filename in external_users.get(target, []))
         return sorted(out)
 
     # A helper moves only if EVERY caller moves with it -- either a batch route
