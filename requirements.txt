@@ -1,11 +1,39 @@
-fastapi>=0.115.0,<1.0.0
-sqlalchemy>=2.0.0,<3.0.0
-uvicorn[standard]>=0.30.0,<1.0.0
-httpx>=0.28.0,<1.0.0
-python-multipart>=0.0.9,<1.0.0
-alembic>=1.13.0,<2.0.0
-PyMySQL>=1.1.0,<2.0.0
-redis>=5.0.0,<6.0.0
-cryptography>=43.0.0,<46.0.0
-pyotp>=2.9.0,<3.0.0
-qrcode[pil]>=7.4.0,<9.0.0
+# Exact pins, not ranges.
+#
+# Release 2026.08.07 failed CI because `pip install` resolved starlette 1.4.1
+# while the machine the code was written on had 1.0.0. starlette 1.4.x wraps
+# routes added by include_router in an _IncludedRouter object, so app.routes no
+# longer yields a flat list of APIRoute and 99 of the 212 routes became
+# invisible to introspection. Nothing was broken at runtime -- the routes still
+# answered -- but nothing had pinned the version either, so the same jump was
+# queued up to land on the production host on its next deploy.
+#
+# Every version below is one this project's 24 tests pass against. Upgrades are
+# deliberate now: bump a line, run the tests, commit the bump on its own.
+
+fastapi==0.136.1
+# Pinned separately and on purpose: fastapi declares only `starlette>=0.46.0`,
+# with no upper bound, so pinning fastapi alone does NOT pin starlette.
+starlette==1.0.0
+pydantic==2.13.4
+
+sqlalchemy==2.0.51
+alembic==1.18.5
+PyMySQL==1.2.0
+redis==5.3.1
+
+uvicorn[standard]==0.51.0
+httpx==0.28.1
+python-multipart==0.0.32
+
+cryptography==45.0.7
+pyotp==2.10.0
+qrcode[pil]==8.2
+# main.py imports PIL directly to build thumbnails, so pillow is a direct
+# dependency here rather than something inherited from qrcode[pil].
+pillow==12.3.0
+
+# app/models/entities.py calls ZoneInfo("Asia/Shanghai") at import time. Linux
+# hosts satisfy that from the OS tz database, which is why CI never complained,
+# but a fresh install on Windows has no system tz data and dies during import.
+tzdata==2026.3
