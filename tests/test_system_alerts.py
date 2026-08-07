@@ -5,15 +5,51 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.api.routes.settings import create_settings_router
 from database import Base
 from main import (
+    SYSTEM_ALERT_ACK_KEY,
+    SYSTEM_SETTINGS_KEY,
+    UI_TABLE_SETTING_KEYS,
+    build_system_alerts,
+    commit_session,
+    get_setting,
     get_system_settings,
-    list_system_alerts,
-    update_system_alert_status,
-    update_system_settings,
+    parse_json_object,
+    read_json_setting,
+    write_audit_log,
+    write_json_setting,
 )
 from models import AdminUser, Warehouse, WarehouseProduct, WarehouseStock
 from schemas import SystemAlertStatusRequest, SystemSettingsResponse
+
+# These three handlers are closures inside create_settings_router now, so they
+# cannot be imported by name. Build the router with the same arguments main.py
+# passes and pull the endpoints off it, which keeps the test on the real wiring.
+# get_db and require_role are stubbed because every call below passes the session
+# and user positionally -- FastAPI's dependency injection never runs here.
+_handlers = {
+    route.name: route.endpoint
+    for route in create_settings_router(
+        get_db=lambda: None,
+        require_role=lambda role: (lambda: None),
+        commit_session=commit_session,
+        write_audit_log=write_audit_log,
+        parse_json_object=parse_json_object,
+        get_setting=get_setting,
+        read_json_setting=read_json_setting,
+        write_json_setting=write_json_setting,
+        get_system_settings=get_system_settings,
+        build_system_alerts=build_system_alerts,
+        system_settings_key=SYSTEM_SETTINGS_KEY,
+        system_alert_ack_key=SYSTEM_ALERT_ACK_KEY,
+        ui_table_setting_keys=UI_TABLE_SETTING_KEYS,
+    ).routes
+}
+
+list_system_alerts = _handlers["list_system_alerts"]
+update_system_alert_status = _handlers["update_system_alert_status"]
+update_system_settings = _handlers["update_system_settings"]
 
 
 class SystemAlertTests(unittest.TestCase):
