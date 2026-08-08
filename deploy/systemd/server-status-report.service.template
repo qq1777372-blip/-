@@ -1,0 +1,45 @@
+[Unit]
+# Runs on a *secondary* machine, not on the main site. The console can only read
+# the box the backend runs on -- /proc, systemctl and disk usage are all local --
+# so every other machine has to report in. This is that reporter.
+#
+# Install (on the machine being monitored):
+#   1. copy scripts/ops/report_server_status.py and app/services/server_status.py
+#      onto the box, keeping the repo layout or putting both in one directory
+#   2. set --node-id to something stable and unique; it must match one of the ids
+#      in SERVER_STATUS_REMOTE_NODES on the main site, or the card shows up
+#      unlabelled
+#   3. put the token in a drop-in: it has to equal SERVER_STATUS_PUSH_TOKEN there
+#
+# The reporter needs no virtualenv: it is standard library only.
+Description=Report this machine's runtime status to the main site
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/opt/ops
+Environment=PYTHONUNBUFFERED=1
+# secret: set in a drop-in, not here. Must match the main site's value.
+Environment=SERVER_STATUS_PUSH_TOKEN=__REPLACE_ME__
+# --interval keeps one process reporting instead of a timer spawning one per run,
+# so a single unit both delivers the heartbeat and survives a failed POST.
+# 120s against the site's 180s staleness window leaves room for one missed report
+# before the card flips to 数据过期.
+ExecStart=/usr/bin/python3 /opt/ops/report_server_status.py \
+    --base-url https://xiaoxu666.asia \
+    --node-id aliyun \
+    --label 阿里云旧服务器 \
+    --token-env SERVER_STATUS_PUSH_TOKEN \
+    --disk-path / \
+    --interval 120
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

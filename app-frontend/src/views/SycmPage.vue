@@ -24,7 +24,19 @@ type Shop = {
   payAmt?: number | null
   payRate?: number | null
 }
-type Device = { deviceId: string; deviceName: string; online: boolean; shopCount: number; lastSeenAt: string }
+// collectable / sessionState / sessionDetail 后端一直有返回，之前 App 端没声明也
+// 没用，于是拿不到千牛会话时这里照样把任务发出去、被采集端领走、采回空数据，
+// 界面却显示成功。PC 端 SycmView 有这段预检，这里对齐。
+type Device = {
+  deviceId: string
+  deviceName: string
+  online: boolean
+  shopCount: number
+  lastSeenAt: string
+  collectable: boolean
+  sessionState: 'ready' | 'blocked' | 'unknown' | string
+  sessionDetail: string
+}
 type SyncResult = { shopId: string; shopName: string; success: boolean }
 type SyncRequest = { id: number; status: 'pending' | 'running' | 'completed' | 'failed'; error: string; results?: SyncResult[] }
 type Period = 'today' | 'yesterday' | 'recent7' | 'recent30'
@@ -147,10 +159,33 @@ async function selectPeriod(value: Period) {
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 
+// 前置条件不满足（采集端不在线、拿不到千牛会话）不是失败，是需要用户先去处理的
+// 事项：文案长、要照着做，所以用警示色并留足阅读时间，与真正的同步失败区分开。
+class SyncPreconditionError extends Error {}
+
 async function syncData() {
   if (syncing.value) return
   syncing.value = true
   try {
+    // 先取一次最新设备状态再决定发不发任务。用最新结果而不是 devices.value，
+    // 避免拿到进页面时的旧快照。
+    const latestDevices = await api<Device[]>('/api/sycm/collector-devices').catch(() => devices.value)
+    devices.value = latestDevices ?? []
+    // 没有在线采集端：任务会一直停在 pending，谁也不会来领，只能空转到超时。
+    if (!devices.value.some((device) => device.online)) {
+      throw new SyncPreconditionError('没有已连接的采集设备，同步任务无人认领。请先启动采集端程序。')
+    }
+    // 连上了但读不到千牛 Cookie 库：任务会被领走然后采回空数据。说清楚阻塞原因，
+    // 比让它「成功」但没有数据要好。
+    if (!devices.value.some((device) => device.collectable)) {
+      const blocked = devices.value.find((device) => device.online && device.sessionState === 'blocked')
+      throw new SyncPreconditionError(
+        blocked?.sessionDetail
+          ? `采集端已连接，但拿不到千牛会话：${blocked.sessionDetail}`
+          : '采集端已连接，但拿不到千牛会话，同步会采不到数据。千牛运行时会锁定 Cookie 库，需要先关闭千牛。',
+      )
+    }
+
     const task = await api<SyncRequest>('/api/sycm/sync-requests', { method: 'POST' })
     syncTask.value = task
     // Show the queued task straight away: the work is done by a separate
@@ -173,7 +208,12 @@ async function syncData() {
     throw new Error('等待采集端超时：任务已排队，但没有采集机认领。请确认采集程序正在运行。')
   } catch (error) {
     const message = error instanceof ApiError ? error.detail : error instanceof Error ? error.message : '同步失败'
-    const toast = await toastController.create({ message, duration: 2200, color: 'danger' })
+    const precondition = error instanceof SyncPreconditionError
+    const toast = await toastController.create({
+      message,
+      duration: precondition ? 5000 : 2200,
+      color: precondition ? 'warning' : 'danger',
+    })
     await toast.present()
   } finally {
     syncing.value = false

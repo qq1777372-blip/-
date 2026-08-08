@@ -13,8 +13,18 @@ Environment=APP_DEBUG=false
 Environment=SESSION_COOKIE_SECURE=false
 Environment=TRUST_PROXY_HEADERS=true
 Environment=LICENSE_SERVER_BASE_URL=http://127.0.0.1:15000
+# Server-status fleet. Without SERVER_STATUS_REMOTE_NODES the 服务器运行 page shows
+# only this machine, because a peer is listed by config -- it does not appear on
+# its own until its first report, and a peer that has never reported would
+# otherwise be invisible rather than shown as 未上报.
+#   id:label,id:label   (id must match --node-id on the reporting box)
+Environment=SERVER_STATUS_NODE_ID=hk-primary
+Environment=SERVER_STATUS_NODE_LABEL=香港主服务器
+Environment=SERVER_STATUS_REMOTE_NODES=aliyun:阿里云旧服务器
 # secret: set in drop-in, not here
 Environment=LICENSE_ADMIN_TOKEN=__REPLACE_ME__
+# secret: shared with scripts/ops/report_server_status.py on every peer
+Environment=SERVER_STATUS_PUSH_TOKEN=__REPLACE_ME__
 ExecStart=/srv/fastapiproject/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=3

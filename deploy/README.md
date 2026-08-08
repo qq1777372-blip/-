@@ -89,6 +89,50 @@ deploy/
 其中 `SYCM_UPLOAD_TOKEN` 更换后，本地生意参谋采集程序也要改成同一个值，
 否则采集端无法上传数据和领取同步任务。
 
+`SERVER_STATUS_PUSH_TOKEN` 同理：每台被监控的机器上，上报脚本用的值必须和主站一致，
+否则上报被 401 拒绝，那台机器在「服务器运行」页上会一直停在「未上报」。
+
+## 服务器运行页要显示第二台机器
+
+主站只能读它自己所在的机器（`/proc`、`systemctl`、磁盘用量都是本地的），
+所以每台额外的机器必须主动上报。少了任何一步，页面就只显示一台。
+
+**主站**（`fastapiproject.service`）：
+
+```
+Environment=SERVER_STATUS_REMOTE_NODES=aliyun:阿里云旧服务器
+Environment=SERVER_STATUS_PUSH_TOKEN=<随机串>
+```
+
+`SERVER_STATUS_REMOTE_NODES` 是 `id:显示名` 列表，逗号分隔。
+**没列在这里的机器，在它第一次上报之前不会出现在页面上** ——
+列出来才能显示成「未上报」，否则你无法区分"这台机器坏了"和"我忘了配"。
+
+**被监控的机器**：拷两个文件过去，不需要装依赖（纯标准库）。
+
+```bash
+sudo mkdir -p /opt/ops
+# 从仓库拷：scripts/ops/report_server_status.py 和 app/services/server_status.py
+# 保持仓库目录结构，或者把两个文件放同一目录
+
+sudo cp deploy/systemd/server-status-report.service.template \
+        /etc/systemd/system/server-status-report.service
+# 改里面的 --node-id / --label，并把 token 写进 drop-in
+sudo systemctl enable --now server-status-report
+```
+
+`--node-id` 必须和主站 `SERVER_STATUS_REMOTE_NODES` 里的 id 一致，否则会多出一张无标签的卡片。
+
+验证：
+
+```bash
+# 在被监控的机器上手动跑一次，看返回
+sudo -u ops SERVER_STATUS_PUSH_TOKEN=<值> python3 /opt/ops/report_server_status.py \
+    --base-url https://xiaoxu666.asia --node-id aliyun --token-env SERVER_STATUS_PUSH_TOKEN
+
+# 期望 "ok 200 {...}"；401 说明 token 和主站不一致
+```
+
 ## 备份现有配置
 
 在服务器上执行，把当前真实配置（含密钥值）导出到一个文件，然后自己保存到安全位置：
