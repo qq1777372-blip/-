@@ -5961,6 +5961,14 @@ async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sy
     heartbeat_only = not shop_ids
     if heartbeat_only and not session_state:
         raise HTTPException(status_code=422, detail="shopIds are required unless sessionState is reported")
+    # Offering shops *is* the readiness proof: the collector can only list them
+    # after opening a Qianniu session for each. Without this, a device that once
+    # reported "blocked" stayed blocked forever -- the agent never sends "ready",
+    # and the empty-string rule below preserves the stored value -- so
+    # `collectable` never recovered and both consoles kept refusing to dispatch a
+    # sync that would in fact have succeeded.
+    if not heartbeat_only and not session_state:
+        session_state = "ready"
     now_dt = datetime.now(ZoneInfo("Asia/Shanghai"))
     now = now_dt.isoformat()
     if heartbeat_only:

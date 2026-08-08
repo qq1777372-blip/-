@@ -175,12 +175,14 @@ async function syncData() {
     if (!devices.value.some((device) => device.online)) {
       throw new SyncPreconditionError('没有已连接的采集设备，同步任务无人认领。请先启动采集端程序。')
     }
-    // 连上了但读不到千牛 Cookie 库：任务会被领走然后采回空数据。说清楚阻塞原因，
-    // 比让它「成功」但没有数据要好。
-    if (!devices.value.some((device) => device.collectable)) {
-      const blocked = devices.value.find((device) => device.online && device.sessionState === 'blocked')
+    // 只在采集端明确说自己被挡住时才拦。判定 `!collectable` 会把 unknown 也算进去，
+    // 而那是「没上报过状态」的意思 —— 采集端只在零可用会话时上报 blocked，恢复正常
+    // 后不会上报 ready，于是一台已经好了的机器会被永久拦住。宁可放行后失败一次，
+    // 也不要拦住能用的采集端。
+    const blocked = devices.value.find((device) => device.online && device.sessionState === 'blocked')
+    if (blocked) {
       throw new SyncPreconditionError(
-        blocked?.sessionDetail
+        blocked.sessionDetail
           ? `采集端已连接，但拿不到千牛会话：${blocked.sessionDetail}`
           : '采集端已连接，但拿不到千牛会话，同步会采不到数据。千牛运行时会锁定 Cookie 库，需要先关闭千牛。',
       )

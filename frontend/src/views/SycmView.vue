@@ -383,12 +383,13 @@ async function startSync() {
       ElMessage.warning('没有已连接的采集设备，同步任务无人认领。请先启动采集端程序。')
       return
     }
-    // Connected but unable to read Qianniu: the task would be claimed and then
-    // return nothing. Naming the blocker beats letting it "succeed" empty.
-    if (!devices.value.some((device) => device.collectable)) {
-      const blocked = devices.value.find((device) => device.online && device.sessionState === 'blocked')
+    // 只在采集端明确说自己被挡住时才拦。此前的条件是「没有一台 collectable」，
+    // 而 collectable 要求 sessionState 恰为 ready —— 于是 unknown（旧版采集端、
+    // 或刚重启还没报过状态）也会被当成故障拦下，明明能采却发不出任务。
+    const blocked = devices.value.find((device) => device.online && device.sessionState === 'blocked')
+    if (blocked && !devices.value.some((device) => device.collectable)) {
       ElMessage.warning(
-        blocked?.sessionDetail
+        blocked.sessionDetail
           ? `采集端已连接，但拿不到千牛会话：${blocked.sessionDetail}`
           : '采集端已连接，但拿不到千牛会话，同步会采不到数据。千牛运行时会锁定 Cookie 库，需要先关闭千牛。',
       )
