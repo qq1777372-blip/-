@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "采集到知策 AI",
+  "version": "1.0.0",
+  "description": "读取当前已登录的淘宝或千牛页面并发送到本机知策 AI 分析。",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "action": {
+    "default_title": "采集到知策 AI",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

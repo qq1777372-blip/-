@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>知策 - AI 运营知识库</title>
+  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="stylesheet" href="styles.css?v=20260731-2330">
+  <style>
+    html.embedded main{position:relative!important;height:100vh!important;min-height:0!important;padding:0!important;overflow:hidden!important}
+    html.embedded #askView.view.active{position:absolute!important;inset:58px 0 0!important;width:auto!important;height:auto!important;min-height:0!important;display:grid!important;overflow:hidden!important}
+    html.embedded #askView .ask-layout{position:relative!important;height:100%!important;min-height:0!important;display:flex!important;flex-direction:column!important;overflow:hidden!important}
+    html.embedded #askView .conversation{flex:1 1 auto!important;height:auto!important;min-height:0!important;overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important}
+    html.embedded #askView .composer-wrap{position:relative!important;inset:auto!important;display:block!important;flex:0 0 auto!important;z-index:4!important;background:var(--bg)!important;border-top:1px solid var(--line)!important}
+    html.app-mode,html.app-mode body,html.app-mode .app-shell,html.app-mode main{width:100%!important;height:var(--app-height,100dvh)!important;min-height:0!important;overflow:hidden!important}
+    html.app-mode .sidebar,html.app-mode .topbar{display:none!important}
+    html.app-mode main{padding:0!important}
+    html.app-mode #askView.view.active{position:absolute!important;inset:0!important;height:var(--app-height,100dvh)!important;min-height:0!important;overflow:hidden!important}
+    html.app-mode #askView .ask-layout{height:100%!important;min-height:0!important;display:flex!important;flex-direction:column!important;overflow:hidden!important}
+    html.app-mode #askView .conversation{flex:1 1 0!important;height:0!important;min-height:0!important;padding:14px 11px 8px!important;overflow-y:auto!important;overscroll-behavior:contain!important}
+    html.app-mode #askView .composer-wrap{position:relative!important;flex:0 0 auto!important;padding:8px 9px calc(8px + env(safe-area-inset-bottom,0px))!important;background:var(--bg)!important;border-top:1px solid var(--line)!important;z-index:20!important}
+    html.app-mode #askView .composer{border-radius:16px!important}
+    html.app-mode #askView .composer textarea,html.app-mode input,html.app-mode select{font-size:16px!important}
+  </style>
+  <script>
+    const pageParams = new URLSearchParams(window.location.search)
+    if (pageParams.get('embedded') === '1') {
+      document.documentElement.classList.add('embedded')
+    }
+    if (pageParams.get('app') === '1') {
+      document.documentElement.classList.add('app-mode')
+      const viewport = document.querySelector('meta[name="viewport"]')
+      if (viewport) viewport.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content'
+      const syncAppHeight = () => document.documentElement.style.setProperty('--app-height', `${window.visualViewport?.height || window.innerHeight}px`)
+      syncAppHeight()
+      window.visualViewport?.addEventListener('resize', syncAppHeight)
+      window.visualViewport?.addEventListener('scroll', syncAppHeight)
+      window.addEventListener('resize', syncAppHeight)
+    }
+    const syncNightMode = () => document.documentElement.classList.toggle('night', localStorage.getItem('site-night-mode') === '1')
+    syncNightMode()
+    window.addEventListener('storage', (event) => {
+      if (event.key === 'site-night-mode') syncNightMode()
+    })
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">知</div><div><strong>知策</strong><span>AI 运营知识库</span></div></div>
+      <nav>
+        <button class="nav-item active" data-view="ask"><i data-lucide="message-square-text"></i><span>知识问答</span></button>
+        <button class="nav-item" data-view="library"><i data-lucide="library"></i><span>知识管理</span><b id="navCount">0</b></button>
+        <button class="nav-item" data-view="quality"><i data-lucide="shield-check"></i><span>数据质量</span><b id="qualityNavCount">0</b></button>
+        <div class="nav-group open" id="storeNavGroup">
+          <button class="nav-item nav-group-toggle" type="button"><i data-lucide="store"></i><span>店铺管理</span><i class="nav-chevron" data-lucide="chevron-down"></i></button>
+          <div class="sub-nav">
+            <button class="sub-nav-item" type="button" data-prompt="请分析店铺账号和当前经营状态，并给出运营建议"><i data-lucide="store"></i><span>店铺账号</span></button>
+            <button class="sub-nav-item" type="button" data-prompt="请对比同行店铺的经营表现，并给出可执行的优化建议"><i data-lucide="store"></i><span>同行店铺</span></button>
+            <button class="sub-nav-item" type="button" data-prompt="请分析我的投放和经营档案，整理出当前最重要的问题"><i data-lucide="file-text"></i><span>执照档案</span></button>
+            <button class="sub-nav-item" type="button" data-prompt="请检查店铺账号使用记录中可能存在的风险，并给出处理方法"><i data-lucide="clipboard-list"></i><span>账号使用记录</span></button>
+            <button class="sub-nav-item" type="button" data-prompt="请分析店铺当前使用的手机设备和登录安全风险"><i data-lucide="smartphone"></i><span>手机设备</span></button>
+          </div>
+        </div>
+      </nav>
+      <div class="chat-history-head"><span>对话历史</span><button id="newChat" title="新建对话"><i data-lucide="square-pen"></i></button></div>
+      <div class="chat-history" id="chatHistory"></div>
+      <div class="sidebar-foot">
+        <div class="status-dot"></div>
+        <div><strong id="aiStatusText">正在检查 AI</strong><span id="aiStatusDetail">本地知识库</span></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><h1 id="pageTitle">知识问答</h1><p id="pageDesc">基于已收录规则，快速获得有来源的答案</p></div>
+        <div class="header-actions"><button class="secondary" id="openSettings"><i data-lucide="settings"></i>AI 设置</button><button class="secondary" id="openImport"><i data-lucide="upload"></i>导入知识</button></div>
+      </header>
+
+      <section id="askView" class="view active">
+        <div class="ask-layout">
+          <div class="conversation">
+            <div class="welcome" id="welcome">
+              <div class="spark"><i data-lucide="sparkles"></i></div>
+              <h2>今天想了解什么？</h2>
+              <p>从平台规则、发布规范和运营经验中查找答案</p>
+              <div class="suggestions" id="suggestions"></div>
+            </div>
+            <div id="messages" class="messages"></div>
+          </div>
+          <div class="composer-wrap">
+            <form id="askForm" class="composer">
+              <input id="questionImage" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+              <button type="button" class="attach-image" id="attachImage" title="添加图片"><i data-lucide="image-plus"></i></button>
+              <textarea id="question" rows="1" placeholder="输入问题，例如：商品发布失败后应该怎么排查？"></textarea>
+              <button type="submit" class="send" title="发送"><i data-lucide="arrow-up"></i></button>
+            </form>
+            <div class="image-preview" id="imagePreview" hidden><img alt="待发送图片"><span id="imageName"></span><button type="button" id="removeImage" title="移除图片"><i data-lucide="x"></i></button></div>
+            <p class="disclaimer">答案来自本地知识库，请以引用的规则原文为准</p>
+          </div>
+        </div>
+        <aside class="context-panel">
+          <div class="panel-head"><h3>知识范围</h3><span id="docCount">0 条</span></div>
+          <div class="metric"><span>平台规则</span><strong id="ruleCount">0</strong></div>
+          <div class="metric"><span>运营经验</span><strong id="caseCount">0</strong></div>
+          <div class="divider"></div>
+          <h4>快捷分类</h4>
+          <div id="categoryFilters" class="filter-list"></div>
+        </aside>
+      </section>
+
+      <section id="libraryView" class="view library-view">
+        <div class="library-toolbar">
+          <div class="search-box"><i data-lucide="search"></i><input id="librarySearch" placeholder="搜索标题、分类或内容"></div>
+          <select id="libraryCategory"><option value="">全部分类</option></select>
+          <span class="library-summary" id="librarySummary"></span>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th>知识标题</th><th>分类</th><th>来源</th><th>更新时间</th><th></th></tr></thead><tbody id="knowledgeRows"></tbody></table>
+          <div id="emptyLibrary" class="empty-state"><i data-lucide="file-search"></i><p>没有找到匹配的知识</p></div>
+        </div>
+        <div class="library-more" id="libraryMore" hidden><button class="secondary" id="loadMoreDocs">加载更多</button></div>
+      </section>
+
+      <section id="qualityView" class="view quality-view">
+        <div class="quality-toolbar">
+          <div><strong id="qualitySummary">正在读取...</strong><span>系统自动检测正文过短、重复章节和图文顺序缺失</span></div>
+          <div class="quality-actions"><button type="button" class="secondary" id="runOcr"><i data-lucide="scan-text"></i>识别图片文字</button><a class="secondary" id="downloadBackup" href="/api/backup" download><i data-lucide="download"></i>备份数据</a><button type="button" class="secondary" id="refreshQuality"><i data-lucide="refresh-cw"></i>刷新</button></div>
+        </div>
+        <div class="table-wrap">
+          <table class="quality-table"><thead><tr><th>文档</th><th>问题</th><th>正文</th><th>图片</th><th>图文块</th><th></th></tr></thead><tbody id="qualityRows"></tbody></table>
+          <div id="emptyQuality" class="empty-state"><i data-lucide="badge-check"></i><p>当前没有完整性告警</p></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="importModal">
+    <div class="modal">
+      <div class="modal-head"><div><h2>导入知识</h2><p>支持 TXT、Markdown 和 JSON 文件</p></div><button class="icon-btn" id="closeImport" title="关闭"><i data-lucide="x"></i></button></div>
+      <div class="url-import">
+        <label>网页或钉钉文档链接<input id="importUrl" type="url" placeholder="https://..."></label>
+        <div class="url-import-actions"><button type="button" class="secondary" id="readWebUrl"><i data-lucide="globe"></i>读取当前网页</button><button type="button" class="secondary" id="readAlidocs"><i data-lucide="folder-sync"></i>批量读取钉钉知识库</button></div>
+        <div class="import-progress" id="importProgress" hidden></div>
+        <div class="import-controls"><button type="button" class="secondary" id="pauseImport"><i data-lucide="pause"></i>暂停</button><button type="button" class="secondary" id="resumeImport"><i data-lucide="play"></i>继续</button><button type="button" class="secondary" id="stopImport"><i data-lucide="square"></i>停止</button></div>
+        <button type="button" class="secondary import-failures-button" id="showImportFailures" hidden><i data-lucide="triangle-alert"></i>查看失败项</button>
+      </div>
+      <form id="importForm">
+        <label>知识标题<input id="importTitle" required placeholder="例如：天猫商品发布规范"></label>
+        <div class="form-grid">
+          <label>分类<select id="importCategory"><option>平台规则</option><option>商品发布</option><option>店铺运营</option><option>售后客服</option><option>运营经验</option></select></label>
+          <label>来源<input id="importSource" placeholder="文件名或网页地址"></label>
+        </div>
+        <label>知识内容<textarea id="importContent" required rows="8" placeholder="粘贴规则正文，或在下方选择文件"></textarea></label>
+        <label class="dropzone" for="fileInput"><i data-lucide="file-up"></i><span><strong>选择本地文件</strong><small>文件内容不会上传到服务器</small></span><input id="fileInput" type="file" accept=".txt,.md,.json"></label>
+        <div class="modal-actions"><button type="button" class="secondary" id="cancelImport">取消</button><button type="submit" class="primary"><i data-lucide="plus"></i>加入知识库</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="documentModal"><div class="modal document-modal"><div class="modal-head"><div><h2 id="documentTitle">文档详情</h2><p id="documentMeta"></p></div><button class="icon-btn" id="closeDocument" title="关闭"><i data-lucide="x"></i></button></div><div class="document-actions"><a id="documentSource" class="secondary" target="_blank" rel="noreferrer"><i data-lucide="external-link"></i>打开原文</a><button type="button" class="secondary" id="copyDocument"><i data-lucide="copy"></i>复制正文</button></div><pre id="documentContent" class="document-content"></pre></div></div>
+
+  <div class="modal-backdrop" id="failureModal"><div class="modal failure-modal"><div class="modal-head"><div><h2>导入失败清单</h2><p>非普通文档、权限或加载异常</p></div><button class="icon-btn" id="closeFailures" title="关闭"><i data-lucide="x"></i></button></div><div id="failureList" class="failure-list"></div></div></div>
+
+  <div class="modal-backdrop" id="settingsModal">
+    <div class="modal settings-modal">
+      <div class="modal-head"><div><h2>AI 模型设置</h2><p>支持 OpenAI 兼容的 Chat Completions 接口</p></div><button class="icon-btn" id="closeSettings" title="关闭"><i data-lucide="x"></i></button></div>
+      <form id="settingsForm">
+        <label>接口地址<input id="aiBaseUrl" required placeholder="https://api.openai.com/v1"></label>
+        <label>模型名称<input id="aiModel" required placeholder="例如：gpt-4.1-mini"></label>
+        <label>API Key<input id="aiApiKey" type="password" placeholder="留空表示不修改已保存的 Key"><small>密钥仅保存在本机配置文件中，不会写入浏览器。</small></label>
+        <div class="preset-row"><span>快速选择</span><button type="button" data-preset="openai">OpenAI</button><button type="button" data-preset="deepseek">DeepSeek</button><button type="button" data-preset="qwen">通义千问</button></div>
+        <div id="connectionResult" class="connection-result"></div>
+        <div class="modal-actions"><button type="button" class="secondary" id="testConnection"><i data-lucide="plug-zap"></i>测试连接</button><button type="submit" class="primary"><i data-lucide="save"></i>保存设置</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="app.js?v=20260808-1915"></script>
+</body>
+</html>

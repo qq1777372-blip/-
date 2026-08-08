@@ -1,0 +1,22 @@
+# 模型接口配置，含明文 API Key。服务器上那份是运行时状态，部署时不要覆盖。
+ai_config.json
+
+# 知识文档、图文结构、完整性指标和导入任务的存储，27MB 起，随导入不断增长。
+knowledge.db
+knowledge.db-shm
+knowledge.db-wal
+
+# 文档正文配图：alidocs_images 目前 5665 个文件。正文引用的是相对路径，
+# 所以这些图必须和 knowledge.db 一起从服务器备份还原，不能靠 git。
+alidocs_images/
+web_import_images/
+
+# 旧版一次性迁移来源，14MB。knowledge.db 建好后只作兼容备份。
+alidocs_import.json
+
+server.log
+server-error.log
+__pycache__/
+*.py[cod]
+.playwright/
+*.bak-*

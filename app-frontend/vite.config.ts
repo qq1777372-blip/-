@@ -19,7 +19,6 @@ const apiPrefixes = [
   '/dingtalk-profits',
   '/expense-categories',
   '/health',
-  '/knowledge-api',
   '/license-admin',
   '/license-records',
   '/mobile-devices',
@@ -37,12 +36,35 @@ const apiPrefixes = [
 
 const backend = process.env.VITE_DEV_API ?? 'http://127.0.0.1:8000'
 
+// The knowledge base is a separate service (`knowledge-base.service`, see
+// deploy/nginx/xiaoxu.conf.template), not part of the FastAPI backend. It serves
+// its own static page at `/` and its API under `/api/`, so both prefixes are
+// rewritten here exactly the way nginx rewrites them in production. Sending
+// these to `backend` instead yields 404s on every knowledge request.
+const knowledgeBackend = process.env.VITE_DEV_KNOWLEDGE ?? 'http://127.0.0.1:8765'
+
+const knowledgeProxy = {
+  '^/knowledge-api/': {
+    target: knowledgeBackend,
+    changeOrigin: true,
+    rewrite: (path: string) => path.replace(/^\/knowledge-api\//, '/api/'),
+  },
+  '^/knowledge/': {
+    target: knowledgeBackend,
+    changeOrigin: true,
+    rewrite: (path: string) => path.replace(/^\/knowledge\//, '/'),
+  },
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   base: '/app/',
   server: {
     port: 5174,
-    proxy: Object.fromEntries(apiPrefixes.map((prefix) => [prefix, backend])),
+    proxy: {
+      ...knowledgeProxy,
+      ...Object.fromEntries(apiPrefixes.map((prefix) => [prefix, backend])),
+    },
   },
   plugins: [
     vue(),

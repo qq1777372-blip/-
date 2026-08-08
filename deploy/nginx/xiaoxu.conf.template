@@ -107,6 +107,60 @@ server {
         proxy_buffering off;
     }
 
+    # 知识问答（知识库）—— 独立服务 knowledge-base.service，监听 127.0.0.1:8765，
+    # 运行目录 /srv/knowledge-base。它不是本项目 FastAPI 的一部分。
+    #
+    # 这三个 location 必须存在。缺少它们时 /knowledge/ 和 /knowledge-api/ 会落到
+    # 下面的 `location /`，被 FastAPI 当成未知路由返回 {"detail":"Not Found"}，
+    # 前端「知识问答」页面因此全部 404。
+    #
+    # 鉴权：知识库服务自身不校验登录，访问控制完全依赖这里的 auth_request，
+    # 由本项目的 /auth/me 判定会话是否有效。删掉 auth_request 会让整个知识库公开。
+    location = /__knowledge_auth {
+        internal;
+        proxy_pass http://127.0.0.1:8000/auth/me;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
+    location = /knowledge {
+        return 302 /knowledge/;
+    }
+
+    # 用 proxy_pass 而不是 alias /srv/knowledge-base/public/：文档正文图片的路径形如
+    # alidocs_images/<hash>/001.png，只存在于服务运行目录，不在 public/ 里。
+    # 用 alias 时页面能打开但所有配图 404。
+    location ^~ /knowledge/ {
+        auth_request /__knowledge_auth;
+        proxy_pass http://127.0.0.1:8765/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_buffering off;
+        add_header Cache-Control "no-cache";
+    }
+
+    # 前端调用 /knowledge-api/<name>，服务实际路径是 /api/<name>，尾部斜杠负责改写。
+    # 问答要等模型返回，超时给到 300s。
+    location ^~ /knowledge-api/ {
+        auth_request /__knowledge_auth;
+        proxy_pass http://127.0.0.1:8765/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+    }
+
     # 本项目：/ui、/app、/api/sycm 等全部由 FastAPI 处理
     location / {
         proxy_pass http://127.0.0.1:8000;

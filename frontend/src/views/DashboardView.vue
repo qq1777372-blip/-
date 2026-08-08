@@ -23,7 +23,7 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   fetchDashboardStats,
   fetchDingTalkProfitMonthlySummary,
@@ -35,7 +35,9 @@ import { useAuthStore } from '../stores/auth'
 import type {
   DashboardStats,
   DingTalkProfitMonthlySummary,
+  ServerNodeStatus,
   ServerStatus,
+  ServerStatusMetrics,
   SycmPeriod,
   SycmShopSnapshot,
   WarehouseSummary,
@@ -52,6 +54,9 @@ const warehouseSummary = ref<WarehouseSummary | null>(null)
 const dingtalkMonthlyRows = ref<DingTalkProfitMonthlySummary[]>([])
 const serverLoading = ref(false)
 const serverStatus = ref<ServerStatus | null>(null)
+// Which machine's detail is on screen. Set from the fleet once it arrives, and
+// re-pointed at the first node if the selected one disappears from the config.
+const activeServerNode = ref('')
 const canViewServerStatus = computed(() => authStore.currentUser?.role === 'superadmin')
 const canViewWarehouse = computed(() => authStore.canAccess('warehouse'))
 const canViewSycm = computed(() => authStore.canAccess('shop_records'))
@@ -322,12 +327,46 @@ const warehouseCards = computed(() => {
   ]
 })
 
-const serverMetricCards = computed(() => {
-  if (!serverStatus.value) {
+// The fleet, with the local machine first. Falls back to a single synthetic node
+// so the page still renders against a backend that predates `nodes`.
+const serverNodes = computed<ServerNodeStatus[]>(() => {
+  const status = serverStatus.value
+  if (!status) {
     return []
   }
+  if (status.nodes?.length) {
+    return status.nodes
+  }
+  return [{
+    node_id: 'local',
+    label: '主服务器',
+    is_local: true,
+    state: 'online',
+    reported_at: status.generated_at,
+    age_seconds: 0,
+    message: null,
+    metrics: status,
+  }]
+})
 
-  const status = serverStatus.value
+// Keep the selected tab pointing at a node that still exists: the first load has
+// nothing selected, and a node dropped from SERVER_STATUS_REMOTE_NODES would
+// otherwise leave the strip with no active pane.
+watch(
+  serverNodes,
+  (nodes) => {
+    if (!nodes.length) {
+      activeServerNode.value = ''
+      return
+    }
+    if (!nodes.some((node) => node.node_id === activeServerNode.value)) {
+      activeServerNode.value = nodes[0].node_id
+    }
+  },
+  { immediate: true },
+)
+
+function serverMetricCards(status: ServerStatusMetrics) {
   return [
     {
       key: 'cpu',
@@ -370,7 +409,7 @@ const serverMetricCards = computed(() => {
       icon: OfficeBuilding,
     },
   ]
-})
+}
 
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) {
@@ -443,6 +482,35 @@ function statusTagType(status: string): 'success' | 'warning' | 'danger' | 'info
 
 function healthLabel(health: ServerStatus['health']) {
   return health === 'healthy' ? '运行正常' : health === 'warning' ? '需要关注' : '存在故障'
+}
+
+// A node's own health only means something once it has reported; until then the
+// state of the report itself is what the badge has to show.
+function nodeStateLabel(node: ServerNodeStatus) {
+  if (node.state === 'missing') {
+    return '未上报'
+  }
+  if (node.state === 'stale') {
+    return node.age_seconds === null ? '数据过期' : `数据过期 ${formatDuration(node.age_seconds)}`
+  }
+  return node.metrics ? healthLabel(node.metrics.health) : '运行正常'
+}
+
+function nodeStateTagType(node: ServerNodeStatus): 'success' | 'warning' | 'danger' | 'info' {
+  if (node.state === 'missing') {
+    return 'info'
+  }
+  if (node.state === 'stale') {
+    return 'warning'
+  }
+  if (!node.metrics) {
+    return 'info'
+  }
+  return node.metrics.health === 'healthy'
+    ? 'success'
+    : node.metrics.health === 'warning'
+      ? 'warning'
+      : 'danger'
 }
 
 async function loadServerStatus(refresh = false, showMessage = false) {
@@ -710,105 +778,177 @@ onMounted(() => {
                   </div>
                 </header>
 
-                <template v-if="serverStatus">
-                  <div class="server-meta">
-                    <span>架构：{{ serverStatus.architecture }}</span>
-                    <span>进程 PID：{{ serverStatus.process_id }}</span>
-                    <span>应用运行：{{ formatDuration(serverStatus.process_uptime_seconds) }}</span>
-                    <span>采集时间：{{ formatDateTime(serverStatus.generated_at) }}</span>
-                  </div>
-
-                  <div class="tile-grid server-metric-grid">
-                    <article v-for="card in serverMetricCards" :key="card.key" class="tile-card tile-card--static tone-indigo">
-                      <span class="tile-card__icon">
-                        <el-icon><component :is="card.icon" /></el-icon>
+                <!-- One tab per machine rather than stacking every machine's
+                     metrics and two tables down the page: the tab strip is the
+                     fleet overview (each label carries its own health dot), and
+                     only the selected machine's detail is rendered. -->
+                <el-tabs v-if="serverNodes.length" v-model="activeServerNode" class="server-tabs">
+                  <el-tab-pane
+                    v-for="node in serverNodes"
+                    :key="node.node_id"
+                    :name="node.node_id"
+                  >
+                    <template #label>
+                      <span class="server-tab__label">
+                        <span class="server-tab__dot" :class="`is-${nodeStateTagType(node)}`" />
+                        {{ node.label }}
+                        <span v-if="node.is_local" class="server-tab__badge">本机</span>
                       </span>
-                      <span class="tile-card__title">{{ card.title }}</span>
-                      <strong class="tile-card__value">{{ card.value }}</strong>
-                      <el-progress
-                        v-if="card.percent !== null"
-                        :percentage="Math.round(card.percent)"
-                        :stroke-width="6"
-                        :show-text="false"
-                        :status="card.percent >= 90 ? 'exception' : card.percent >= 75 ? 'warning' : 'success'"
-                      />
-                      <span class="tile-card__note">{{ card.note }}</span>
-                    </article>
-                  </div>
+                    </template>
 
-                  <div class="server-list-grid">
-                    <section class="data-panel">
-                      <div class="data-panel__head">
-                        <div>
-                          <h4>服务状态</h4>
-                          <p>系统服务实时运行情况</p>
-                        </div>
-                        <span class="dash-badge dash-badge--ok">
-                          {{ serverStatus.services.filter((item) => item.is_active).length }} / {{ serverStatus.services.length }} 正常
+                    <header class="server-node__head">
+                      <div class="server-node__title">
+                        <el-tag :type="nodeStateTagType(node)" size="small" round>
+                          {{ nodeStateLabel(node) }}
+                        </el-tag>
+                        <span v-if="node.metrics" class="server-node__host">
+                          {{ node.metrics.hostname }} · {{ node.metrics.operating_system }}
                         </span>
                       </div>
-                      <el-table :data="serverStatus.services" stripe>
-                        <el-table-column prop="display_name" label="服务" min-width="130" sortable />
-                        <el-table-column prop="active_state" label="状态" width="100" sortable>
-                          <template #default="{ row }">
-                            <el-tag :type="statusTagType(row.active_state)" size="small" round>
-                              {{ serviceStatusLabel(row.active_state) }}
-                            </el-tag>
-                          </template>
-                        </el-table-column>
-                        <el-table-column prop="sub_state" label="运行阶段" min-width="100" sortable />
-                      </el-table>
-                    </section>
+                    </header>
 
-                    <section class="data-panel data-panel--database">
-                      <div class="data-panel__head">
-                        <div>
-                          <h4>数据库容量</h4>
-                          <p>
-                            正式库 {{ formatBytes(serverStatus.active_database_total_size_bytes) }}，
-                            备份库 {{ formatBytes(serverStatus.backup_database_total_size_bytes) }}
-                          </p>
+                    <p v-if="node.message" class="server-node__message">{{ node.message }}</p>
+
+                    <template v-if="node.metrics">
+                      <!-- label/value pairs rather than pill chips: the values are
+                           what matters here, and the chips made a header row read
+                           as five unrelated buttons. -->
+                      <dl class="server-meta">
+                        <div class="server-meta__item">
+                          <dt>架构</dt>
+                          <dd>{{ node.metrics.architecture }}</dd>
                         </div>
-                        <el-tag :type="statusTagType(serverStatus.database_connection_status)" size="small" round>
-                          主库 {{ serverStatus.database_connection_status === 'available' ? '连接正常' : '连接异常' }}
-                          <template v-if="serverStatus.database_latency_ms !== null">
-                            · {{ serverStatus.database_latency_ms }} ms
-                          </template>
-                        </el-tag>
+                        <div class="server-meta__item">
+                          <dt>进程 PID</dt>
+                          <dd>{{ node.metrics.process_id }}</dd>
+                        </div>
+                        <div class="server-meta__item">
+                          <dt>应用运行</dt>
+                          <dd>{{ formatDuration(node.metrics.process_uptime_seconds) }}</dd>
+                        </div>
+                        <div class="server-meta__item">
+                          <dt>采集时间</dt>
+                          <dd>{{ formatDateTime(node.metrics.generated_at) }}</dd>
+                        </div>
+                        <div v-if="!node.is_local" class="server-meta__item">
+                          <dt>上报时间</dt>
+                          <dd>{{ node.reported_at ? formatDateTime(node.reported_at) : '--' }}</dd>
+                        </div>
+                      </dl>
+
+                      <div class="tile-grid server-metric-grid">
+                        <article
+                          v-for="card in serverMetricCards(node.metrics)"
+                          :key="card.key"
+                          class="tile-card tile-card--static tone-indigo"
+                        >
+                          <span class="tile-card__icon">
+                            <el-icon><component :is="card.icon" /></el-icon>
+                          </span>
+                          <span class="tile-card__title">{{ card.title }}</span>
+                          <strong class="tile-card__value">{{ card.value }}</strong>
+                          <el-progress
+                            v-if="card.percent !== null"
+                            :percentage="Math.round(card.percent)"
+                            :stroke-width="6"
+                            :show-text="false"
+                            :status="card.percent >= 90 ? 'exception' : card.percent >= 75 ? 'warning' : 'success'"
+                          />
+                          <span class="tile-card__note">{{ card.note }}</span>
+                        </article>
                       </div>
-                      <el-table :data="serverStatus.databases" stripe max-height="420">
-                        <el-table-column prop="name" label="数据库" min-width="220" sortable>
-                          <template #default="{ row }">
-                            <div class="database-name-cell">
-                              <strong>{{ row.name }}</strong>
-                              <span>{{ row.source }} · {{ row.relative_path }}</span>
+
+                      <!-- Stacked rather than two columns: four services next to a
+                           long database table left the services column padded out
+                           with empty space no matter how the heights were aligned.
+                           A handful of services reads better as a row of chips. -->
+                      <div class="server-panels">
+                        <section class="data-panel">
+                          <div class="data-panel__head">
+                            <div>
+                              <h4>服务状态</h4>
+                              <p>系统服务实时运行情况</p>
                             </div>
-                          </template>
-                        </el-table-column>
-                        <el-table-column prop="category" label="类型" width="90" sortable>
-                          <template #default="{ row }">
-                            <el-tag :type="row.category === 'active' ? 'primary' : 'info'" size="small" round>
-                              {{ row.category === 'active' ? '正式库' : '备份库' }}
+                            <span class="dash-badge dash-badge--ok">
+                              {{ node.metrics.services.filter((item) => item.is_active).length }} / {{ node.metrics.services.length }} 正常
+                            </span>
+                          </div>
+                          <div class="service-chips">
+                            <article
+                              v-for="service in node.metrics.services"
+                              :key="service.name"
+                              class="service-chip"
+                            >
+                              <span class="service-chip__dot" :class="`is-${statusTagType(service.active_state)}`" />
+                              <span class="service-chip__body">
+                                <strong>{{ service.display_name || service.name }}</strong>
+                                <small>{{ serviceStatusLabel(service.active_state) }} · {{ service.sub_state }}</small>
+                              </span>
+                            </article>
+                            <p v-if="!node.metrics.services.length" class="service-chips__empty">
+                              暂无服务状态数据
+                            </p>
+                          </div>
+                        </section>
+
+                        <section class="data-panel data-panel--database">
+                          <div class="data-panel__head">
+                            <div>
+                              <h4>数据库容量</h4>
+                              <p>
+                                正式库 {{ formatBytes(node.metrics.active_database_total_size_bytes) }}，
+                                备份库 {{ formatBytes(node.metrics.backup_database_total_size_bytes) }}
+                              </p>
+                            </div>
+                            <el-tag :type="statusTagType(node.metrics.database_connection_status)" size="small" round>
+                              <template v-if="node.metrics.database_connection_status === 'not-configured'">
+                                无应用数据库
+                              </template>
+                              <template v-else>
+                                主库 {{ node.metrics.database_connection_status === 'available' ? '连接正常' : '连接异常' }}
+                                <template v-if="node.metrics.database_latency_ms !== null">
+                                  · {{ node.metrics.database_latency_ms }} ms
+                                </template>
+                              </template>
                             </el-tag>
-                          </template>
-                        </el-table-column>
-                        <el-table-column prop="status" label="状态" width="90" sortable>
-                          <template #default="{ row }">
-                            <el-tag :type="statusTagType(row.status)" size="small" round>
-                              {{ databaseStatusLabel(row.status) }}
-                            </el-tag>
-                          </template>
-                        </el-table-column>
-                        <el-table-column prop="size_bytes" label="容量" width="110" align="right" sortable>
-                          <template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template>
-                        </el-table-column>
-                        <el-table-column prop="modified_at" label="更新时间" min-width="165" sortable>
-                          <template #default="{ row }">{{ formatDateTime(row.modified_at) }}</template>
-                        </el-table-column>
-                      </el-table>
-                    </section>
-                  </div>
-                </template>
+                          </div>
+                          <el-table :data="node.metrics.databases" stripe max-height="420">
+                            <el-table-column prop="name" label="数据库" min-width="220" sortable>
+                              <template #default="{ row }">
+                                <div class="database-name-cell">
+                                  <strong>{{ row.name }}</strong>
+                                  <span>{{ row.source }} · {{ row.relative_path }}</span>
+                                </div>
+                              </template>
+                            </el-table-column>
+                            <el-table-column prop="category" label="类型" width="90" sortable>
+                              <template #default="{ row }">
+                                <el-tag :type="row.category === 'active' ? 'primary' : 'info'" size="small" round>
+                                  {{ row.category === 'active' ? '正式库' : '备份库' }}
+                                </el-tag>
+                              </template>
+                            </el-table-column>
+                            <el-table-column prop="status" label="状态" width="90" sortable>
+                              <template #default="{ row }">
+                                <el-tag :type="statusTagType(row.status)" size="small" round>
+                                  {{ databaseStatusLabel(row.status) }}
+                                </el-tag>
+                              </template>
+                            </el-table-column>
+                            <el-table-column prop="size_bytes" label="容量" width="110" align="right" sortable>
+                              <template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template>
+                            </el-table-column>
+                            <el-table-column prop="modified_at" label="更新时间" min-width="165" sortable>
+                              <template #default="{ row }">{{ formatDateTime(row.modified_at) }}</template>
+                            </el-table-column>
+                          </el-table>
+                        </section>
+                      </div>
+                    </template>
+
+                    <el-empty v-else :description="`${node.label} 暂无上报数据`" :image-size="72" />
+                  </el-tab-pane>
+                </el-tabs>
 
                 <el-empty v-else description="暂无服务器状态数据" />
               </section>
@@ -1368,30 +1508,208 @@ onMounted(() => {
   min-width: 0;
 }
 
+/* The tab strip doubles as the fleet overview, so the dot has to read at a
+   glance -- it is the only health signal for the machines not currently open. */
+.server-tabs {
+  min-width: 0;
+}
+
+.server-tabs :deep(.el-tabs__header) {
+  margin-bottom: 14px;
+}
+
+.server-tabs :deep(.el-tabs__item) {
+  height: 38px;
+  font-weight: 500;
+}
+
+.server-tab__label {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.server-tab__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--el-color-info, #909399);
+}
+
+.server-tab__dot.is-success {
+  background: var(--el-color-success, #67c23a);
+}
+
+.server-tab__dot.is-warning {
+  background: var(--el-color-warning, #e6a23c);
+}
+
+.server-tab__dot.is-danger {
+  background: var(--el-color-danger, #f56c6c);
+}
+
+.server-tab__badge {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--fill-soft, #f0f2f5);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.server-node__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.server-node__title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.server-node__title h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.server-node__host {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.server-node__message {
+  margin: 8px 0 0;
+  padding: 8px 11px;
+  border-radius: 9px;
+  background: var(--fill-soft, #f4f7fb);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.server-node__empty {
+  padding: 18px 0 4px;
+}
+
 .server-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 10px;
-  margin-bottom: 16px;
+  gap: 6px 28px;
+  margin: 12px 0 16px;
+  padding: 11px 14px;
+  border: 1px solid var(--border-soft, #eef0f4);
+  border-radius: 10px;
+  background: #fbfcfd;
 }
 
-.server-meta span {
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: #f6f7f9;
+.server-meta__item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.server-meta dt {
   color: var(--text-secondary);
   font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.server-meta dd {
+  margin: 0;
+  color: var(--text-primary, #1f2937);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 .server-metric-grid {
   margin-bottom: 16px;
 }
 
-.server-list-grid {
+/* Full-width rows instead of side-by-side columns: the services panel is always
+   a few rows tall while the database table scrolls to 420px, so any shared row
+   left one column padded out with dead space. Stacking also removes the old
+   834px minimum that used to force the page into a horizontal scroll. */
+.server-panels {
   display: grid;
-  grid-template-columns: minmax(300px, 0.8fr) minmax(520px, 1.6fr);
   gap: 14px;
   min-width: 0;
+}
+
+.service-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.service-chip {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft, #eef0f4);
+  border-radius: 10px;
+  background: #fbfcfd;
+}
+
+.service-chip__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--el-color-info, #909399);
+}
+
+.service-chip__dot.is-success {
+  background: var(--el-color-success, #67c23a);
+}
+
+.service-chip__dot.is-warning {
+  background: var(--el-color-warning, #e6a23c);
+}
+
+.service-chip__dot.is-danger {
+  background: var(--el-color-danger, #f56c6c);
+}
+
+.service-chip__body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.service-chip__body strong {
+  overflow: hidden;
+  color: var(--text-primary, #1f2937);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.service-chip__body small {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.service-chips__empty {
+  margin: 0;
+  padding: 6px 0 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .data-panel {
@@ -1463,10 +1781,6 @@ onMounted(() => {
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 1180px) {
-  .server-list-grid {
-    grid-template-columns: 1fr;
-  }
-
   .metric-strip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }

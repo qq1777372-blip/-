@@ -159,6 +159,7 @@ POST /company-expenses
 POST /company-expenses/{record_id}/attachment
 POST /custom-fields
 POST /custom-fields/reorder
+POST /dashboard/server-status/push
 POST /expense-shortcut/record
 POST /expense-shortcut/token
 POST /internal/dingtalk-profits/delete-batch

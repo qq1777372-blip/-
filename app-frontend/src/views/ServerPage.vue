@@ -26,6 +26,21 @@ type Status = {
   database_latency_ms: number | null
   services: Service[]
 }
+// A machine in the fleet. `metrics` is null until that machine has reported, so
+// "no data yet" stays distinguishable from "all readings are zero".
+type Node = {
+  node_id: string
+  label: string
+  is_local: boolean
+  state: 'online' | 'stale' | 'missing'
+  reported_at: string | null
+  age_seconds: number | null
+  message: string | null
+  metrics: Status | null
+}
+// `nodes` is additive: the local machine's readings are still at the top level,
+// so a backend that predates the fleet support keeps rendering.
+type StatusResponse = Status & { nodes?: Node[] }
 
 const HEALTH: Record<string, { label: string; tone: string }> = {
   healthy: { label: '运行正常', tone: 'success' },
@@ -39,6 +54,8 @@ const SERVICE_STATE: Record<string, string> = {
 }
 
 const status = ref<Status | null>(null)
+const nodes = ref<Node[]>([])
+const activeNodeId = ref('')
 const loading = ref(true)
 const refreshing = ref(false)
 const errorMessage = ref('')
@@ -47,11 +64,48 @@ const lastUpdated = ref<Date | null>(null)
 // overwriting fresher data.
 let requestId = 0
 
-const health = computed(() => HEALTH[status.value?.health || ''] || { label: '状态未知', tone: 'neutral' })
-const activeServices = computed(() => status.value?.services.filter((item) => item.is_active).length || 0)
+const activeNode = computed(() => nodes.value.find((node) => node.node_id === activeNodeId.value) || null)
+// What the detail below the switcher describes. With no `nodes` (older backend)
+// or on the local tab this is the top-level payload, so the page renders the
+// same as before the fleet existed.
+const view = computed<Status | null>(() => {
+  const node = activeNode.value
+  if (!node) return status.value
+  return node.is_local ? status.value : node.metrics
+})
+
+const health = computed(() => HEALTH[view.value?.health || ''] || { label: '状态未知', tone: 'neutral' })
+const activeServices = computed(() => view.value?.services.filter((item) => item.is_active).length || 0)
+
+// A peer's own health only means something once it has reported; until then the
+// freshness of the report is what the badge has to say.
+const nodeBadge = computed(() => {
+  const node = activeNode.value
+  if (!node || node.is_local || node.state === 'online') return health.value
+  if (node.state === 'stale') {
+    return { label: node.age_seconds == null ? '数据过期' : `数据过期 ${uptime(node.age_seconds)}`, tone: 'warning' }
+  }
+  return { label: '未上报', tone: 'neutral' }
+})
+
+function nodeTone(node: Node) {
+  if (node.state === 'missing') return 'neutral'
+  if (node.state === 'stale') return 'warning'
+  return HEALTH[node.metrics?.health || (node.is_local ? status.value?.health : '') || '']?.tone || 'neutral'
+}
 const updatedAt = computed(() => lastUpdated.value?.toLocaleTimeString('zh-CN', {
   hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
 }) || '--')
+// A peer's card is only as fresh as its last push, so show that timestamp
+// instead of when this page happened to fetch.
+const reportedAt = computed(() => {
+  const value = activeNode.value?.reported_at
+  if (!value) return '--'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? '--' : parsed.toLocaleTimeString('zh-CN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
+})
 
 function size(value: number | null) {
   if (value == null) return '--'
@@ -101,9 +155,15 @@ async function load(force = false, event?: { target: { complete: () => void } })
   refreshing.value = true
   if (!status.value) loading.value = true
   try {
-    const data = await api<Status>(`/dashboard/server-status${force ? '?refresh=true' : ''}`)
+    const data = await api<StatusResponse>(`/dashboard/server-status${force ? '?refresh=true' : ''}`)
     if (current !== requestId) return
     status.value = data
+    nodes.value = data.nodes?.length ? data.nodes : []
+    // Keep the current selection across refreshes; fall back to the first node
+    // (the local machine) when it disappears from the fleet.
+    if (!nodes.value.some((node) => node.node_id === activeNodeId.value)) {
+      activeNodeId.value = nodes.value[0]?.node_id || ''
+    }
     lastUpdated.value = new Date()
     errorMessage.value = ''
   } catch (error) {
@@ -142,9 +202,24 @@ onMounted(() => load(!!status.value))
         </section>
 
         <template v-else-if="status">
+          <!-- Only worth a switcher once there is more than one machine; with a
+               single node the page looks exactly as it did before. -->
+          <nav v-if="nodes.length > 1" class="node-switch" aria-label="选择服务器">
+            <button
+              v-for="node in nodes"
+              :key="node.node_id"
+              type="button"
+              :class="['node-chip', { active: node.node_id === activeNodeId }]"
+              @click="activeNodeId = node.node_id"
+            >
+              <i :class="['node-dot', nodeTone(node)]" />
+              <span>{{ node.label }}</span>
+            </button>
+          </nav>
+
           <section class="panel host-card">
             <div class="host-top">
-              <span :class="['health-badge', `health-${health.tone}`]"><i />{{ health.label }}</span>
+              <span :class="['health-badge', `health-${nodeBadge.tone}`]"><i />{{ nodeBadge.label }}</span>
               <button class="refresh-button" :disabled="refreshing" aria-label="刷新服务器状态" @click="load(true)">
                 <IonIcon :icon="refreshOutline" :class="{ spinning: refreshing }" />
               </button>
@@ -152,71 +227,83 @@ onMounted(() => load(!!status.value))
             <div class="host-main">
               <span class="host-icon"><IonIcon :icon="serverOutline" /></span>
               <div>
-                <h1>{{ status.hostname || '服务器' }}</h1>
-                <p>{{ [status.operating_system, status.architecture].filter(Boolean).join(' · ') || '系统信息未知' }}</p>
+                <h1>{{ view?.hostname || activeNode?.label || '服务器' }}</h1>
+                <p>{{ [view?.operating_system, view?.architecture].filter(Boolean).join(' · ') || '系统信息未知' }}</p>
               </div>
             </div>
             <footer>
-              <span>最后更新</span>
-              <strong>{{ updatedAt }}</strong>
+              <span>{{ activeNode && !activeNode.is_local ? '最后上报' : '最后更新' }}</span>
+              <strong>{{ activeNode && !activeNode.is_local ? reportedAt : updatedAt }}</strong>
               <em v-if="errorMessage">刷新失败，当前为上次数据</em>
               <em v-else-if="refreshing">正在刷新…</em>
             </footer>
           </section>
 
-          <section class="metric-strip server-metrics">
-            <article class="metric">
-              <span>CPU 使用率</span>
-              <strong>{{ percent(status.cpu_percent) }}</strong>
-              <small>{{ status.cpu_count ?? '--' }} 核心</small>
-              <i class="usage-track"><b :class="barTone(status.cpu_percent)" :style="{ width: `${barWidth(status.cpu_percent)}%` }" /></i>
-            </article>
-            <article class="metric">
-              <span>内存使用率</span>
-              <strong>{{ percent(status.memory_percent) }}</strong>
-              <small>{{ size(status.memory_used_bytes) }} / {{ size(status.memory_total_bytes) }}</small>
-              <i class="usage-track"><b :class="barTone(status.memory_percent)" :style="{ width: `${barWidth(status.memory_percent)}%` }" /></i>
-            </article>
-            <article class="metric">
-              <span>磁盘使用率</span>
-              <strong>{{ percent(status.disk_percent) }}</strong>
-              <small>{{ size(status.disk_used_bytes) }} / {{ size(status.disk_total_bytes) }}</small>
-              <i class="usage-track"><b :class="barTone(status.disk_percent)" :style="{ width: `${barWidth(status.disk_percent)}%` }" /></i>
-            </article>
-          </section>
+          <template v-if="view">
+            <section class="metric-strip server-metrics">
+              <article class="metric">
+                <span>CPU 使用率</span>
+                <strong>{{ percent(view.cpu_percent) }}</strong>
+                <small>{{ view.cpu_count ?? '--' }} 核心</small>
+                <i class="usage-track"><b :class="barTone(view.cpu_percent)" :style="{ width: `${barWidth(view.cpu_percent)}%` }" /></i>
+              </article>
+              <article class="metric">
+                <span>内存使用率</span>
+                <strong>{{ percent(view.memory_percent) }}</strong>
+                <small>{{ size(view.memory_used_bytes) }} / {{ size(view.memory_total_bytes) }}</small>
+                <i class="usage-track"><b :class="barTone(view.memory_percent)" :style="{ width: `${barWidth(view.memory_percent)}%` }" /></i>
+              </article>
+              <article class="metric">
+                <span>磁盘使用率</span>
+                <strong>{{ percent(view.disk_percent) }}</strong>
+                <small>{{ size(view.disk_used_bytes) }} / {{ size(view.disk_total_bytes) }}</small>
+                <i class="usage-track"><b :class="barTone(view.disk_percent)" :style="{ width: `${barWidth(view.disk_percent)}%` }" /></i>
+              </article>
+            </section>
 
-          <div class="section-title"><h2>运行概览</h2><span>核心状态</span></div>
-          <section class="compact-list server-info">
-            <article class="compact-row info-row">
-              <span class="info-icon database"><IonIcon :icon="serverOutline" /></span>
-              <div><h3>数据库</h3><p>{{ status.database_count }} 个库 · {{ size(status.database_total_size_bytes) }}</p></div>
-              <strong :class="['state-label', dbTone(status.database_connection_status)]">{{ dbLabel(status.database_connection_status) }}</strong>
-            </article>
-            <article class="compact-row info-row">
-              <span class="info-icon latency"><IonIcon :icon="speedometerOutline" /></span>
-              <div><h3>接口延迟</h3><p>主数据库连接响应</p></div>
-              <strong>{{ status.database_latency_ms === null ? '--' : `${Math.round(status.database_latency_ms * 10) / 10} ms` }}</strong>
-            </article>
-            <article class="compact-row info-row">
-              <span class="info-icon uptime"><IonIcon :icon="speedometerOutline" /></span>
-              <div><h3>应用运行</h3><p>当前后台进程持续时间</p></div>
-              <strong>{{ uptime(status.process_uptime_seconds) }}</strong>
-            </article>
-          </section>
+            <div class="section-title"><h2>运行概览</h2><span>核心状态</span></div>
+            <section class="compact-list server-info">
+              <article class="compact-row info-row">
+                <span class="info-icon database"><IonIcon :icon="serverOutline" /></span>
+                <div><h3>数据库</h3><p>{{ view.database_count }} 个库 · {{ size(view.database_total_size_bytes) }}</p></div>
+                <strong :class="['state-label', dbTone(view.database_connection_status)]">{{ dbLabel(view.database_connection_status) }}</strong>
+              </article>
+              <article class="compact-row info-row">
+                <span class="info-icon latency"><IonIcon :icon="speedometerOutline" /></span>
+                <div><h3>接口延迟</h3><p>主数据库连接响应</p></div>
+                <strong>{{ view.database_latency_ms === null ? '--' : `${Math.round(view.database_latency_ms * 10) / 10} ms` }}</strong>
+              </article>
+              <article class="compact-row info-row">
+                <span class="info-icon uptime"><IonIcon :icon="speedometerOutline" /></span>
+                <div><h3>应用运行</h3><p>当前后台进程持续时间</p></div>
+                <strong>{{ uptime(view.process_uptime_seconds) }}</strong>
+              </article>
+            </section>
 
-          <div class="section-title service-title">
-            <h2>服务状态</h2>
-            <span>正常 {{ activeServices }} / 共 {{ status.services.length }}</span>
-          </div>
-          <section class="compact-list service-list">
-            <article v-for="service in status.services" :key="service.name" class="compact-row service-row">
-              <i :class="['service-dot', serviceTone(service)]" />
-              <div><h3>{{ service.display_name || service.name }}</h3><p>{{ serviceDetail(service) }}</p></div>
-              <strong :class="['state-label', serviceTone(service)]">{{ serviceLabel(service) }}</strong>
-            </article>
-            <div v-if="!status.services.length" class="empty-state service-empty">
-              <IonIcon :icon="hardwareChipOutline" />
-              <span>暂无服务状态数据</span>
+            <div class="section-title service-title">
+              <h2>服务状态</h2>
+              <span>正常 {{ activeServices }} / 共 {{ view.services.length }}</span>
+            </div>
+            <section class="compact-list service-list">
+              <article v-for="service in view.services" :key="service.name" class="compact-row service-row">
+                <i :class="['service-dot', serviceTone(service)]" />
+                <div><h3>{{ service.display_name || service.name }}</h3><p>{{ serviceDetail(service) }}</p></div>
+                <strong :class="['state-label', serviceTone(service)]">{{ serviceLabel(service) }}</strong>
+              </article>
+              <div v-if="!view.services.length" class="empty-state service-empty">
+                <IonIcon :icon="hardwareChipOutline" />
+                <span>暂无服务状态数据</span>
+              </div>
+            </section>
+          </template>
+
+          <!-- A peer listed as expected but that has never reported: say so
+               rather than rendering a card full of dashes. -->
+          <section v-else class="panel empty-node">
+            <IonIcon :icon="hardwareChipOutline" />
+            <div>
+              <h2>{{ activeNode?.label || '该服务器' }}暂无上报数据</h2>
+              <p>{{ activeNode?.message || '这台服务器还没有推送过运行状态，确认它的上报脚本是否在运行。' }}</p>
             </div>
           </section>
         </template>
@@ -237,6 +324,21 @@ onMounted(() => load(!!status.value))
 .error-panel>span{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;color:#dc2626;background:color-mix(in srgb,#ef4444 12%,var(--app-card));font-weight:800}
 .error-panel button{grid-column:2;justify-self:start;padding:8px 13px;border:0;border-radius:9px;color:#fff;background:var(--app-blue);font-weight:650}
 .error-panel button:disabled{opacity:.55}
+/* Horizontal scroll rather than wrapping: a phone fits about two labels, and a
+   growing fleet should not push the cards further down the screen. */
+.node-switch{display:flex;gap:8px;overflow-x:auto;margin:0 -16px;padding:0 16px 2px;scrollbar-width:none}
+.node-switch::-webkit-scrollbar{display:none}
+.node-chip{flex:none;display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border:1px solid var(--app-line);border-radius:999px;color:var(--app-muted);background:var(--app-card);font-size:12px;font-weight:600}
+.node-chip.active{border-color:color-mix(in srgb,var(--app-blue) 45%,transparent);color:var(--app-blue);background:color-mix(in srgb,var(--app-blue) 10%,var(--app-card))}
+.node-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--app-muted)}
+.node-dot.success{background:#22c55e}
+.node-dot.warning{background:#f59e0b}
+.node-dot.danger{background:#ef4444}
+.empty-node{display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;align-items:center;padding:18px 16px}
+.empty-node ion-icon{font-size:26px;color:var(--app-muted)}
+.empty-node h2,.empty-node p{margin:0}
+.empty-node h2{font-size:15px}
+.empty-node p{margin-top:5px;color:var(--app-muted);font-size:11px;line-height:1.5}
 .host-card{padding:14px}
 .host-top{display:flex;align-items:center;justify-content:space-between}
 .health-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:700}

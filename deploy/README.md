@@ -31,6 +31,35 @@
 同机还有一个 `fastapiproject-old-server-tunnel.service`，用 SSH 隧道连到旧的
 阿里云服务器 `121.196.150.21`，供 `/software/` 和 `/wpfapp1/` 两个路径转发使用。
 
+## 知识问答（独立服务，代码在 `services/knowledge-base/`）
+
+前端「知识问答」页面（`frontend/src/views/KnowledgeView.vue`、
+`app-frontend/src/views/KnowledgePage.vue`）调用的 `/knowledge/` 和 `/knowledge-api/`
+**不由本项目 FastAPI 提供**，而是另一个独立服务：
+
+| 项目 | 值 |
+|---|---|
+| 服务 | `knowledge-base.service` |
+| 端口 | `127.0.0.1:8765` |
+| 运行目录 | `/srv/knowledge-base` |
+| 入口 | `server.py`（标准库 `ThreadingHTTPServer`，非 FastAPI） |
+| 仓库内代码 | `services/knowledge-base/`（详见该目录的 README） |
+| 数据库 | `/srv/knowledge-base/knowledge.db`（不入 git） |
+| 文档配图 | `/srv/knowledge-base/alidocs_images/`（不入 git） |
+| 模型配置 | `/srv/knowledge-base/ai_config.json`（含 API Key，不入 git） |
+
+代码 2026-08-08 已纳入本仓库的 `services/knowledge-base/`。在那之前只存在于开发机的
+`C:\Users\Administrator\ai-knowledge-web`，无版本控制——曾发生改动被静默还原、
+以及新旧副本只能靠比对 md5 分辨的情况。
+
+**但 CI 目前只部署 `/srv/fastapiproject`，不会碰 `/srv/knowledge-base`。**
+改了那个目录的代码仍需手工同步并 `systemctl restart knowledge-base`，步骤见其 README。
+
+三条 nginx location（`/__knowledge_auth`、`/knowledge/`、`/knowledge-api/`）
+缺任何一条，请求都会落到 `location /` 被 FastAPI 当成未知路由，
+前端表现为知识问答整页 404。登录鉴权完全由 `auth_request` 提供，
+知识库服务自身不校验会话，删掉 `auth_request` 等于把知识库公开。
+
 ## 目录内容
 
 ```
@@ -39,6 +68,7 @@ deploy/
 ├── .env.example                           全部环境变量清单（只有名字，没有值）
 ├── systemd/
 │   ├── fastapiproject.service.template    主服务单元
+│   ├── knowledge-base.service.template    知识问答服务单元
 │   └── drop-ins.template.md               5 个 drop-in 配置说明
 └── nginx/
     └── xiaoxu.conf.template               站点配置
@@ -92,6 +122,19 @@ sudo sh -c '
 7. 按 `nginx/` 模板配置站点，用 certbot 申请证书
 8. `systemctl daemon-reload && systemctl enable --now fastapiproject`
 9. 验证：`curl -s http://127.0.0.1:8000/api/health`
+10. 恢复知识问答服务（见上文「知识问答」一节）：
+    代码从本仓库 `services/knowledge-base/` 复制到 `/srv/knowledge-base`，
+    再从备份还原三样不入 git 的运行时数据——`knowledge.db`、`alidocs_images/`、
+    `ai_config.json`。然后建 `.venv` 装 `requirements.txt`，
+    `systemctl enable --now knowledge-base`
+11. 验证知识问答：
+
+    ```bash
+    curl -s http://127.0.0.1:8765/api/status
+    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8765/api/documents
+    # 经 nginx（未登录应为 401，登录后为 200）
+    curl -sk -o /dev/null -w '%{http_code}\n' https://xiaoxu666.asia/knowledge-api/status
+    ```
 
 ## 已知问题
 

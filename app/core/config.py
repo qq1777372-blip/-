@@ -28,6 +28,17 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [item for item in values if item]
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    try:
+        return max(minimum, int(raw_value.strip()))
+    except ValueError:
+        return default
+
+
 def _env_choice(name: str, default: str, allowed: set[str]) -> str:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -63,6 +74,11 @@ class Settings:
     dingtalk_robot_secret: str
     public_app_base_url: str
     auth_encryption_key: str
+    server_status_node_id: str
+    server_status_node_label: str
+    server_status_remote_nodes: str
+    server_status_push_token: str
+    server_status_stale_after_seconds: int
 
     @property
     def is_sqlite(self) -> bool:
@@ -106,6 +122,15 @@ def get_settings() -> Settings:
         dingtalk_robot_secret=os.getenv("DINGTALK_ROBOT_SECRET", "").strip(),
         public_app_base_url=os.getenv("PUBLIC_APP_BASE_URL", "https://xiaoxu666.asia").strip().rstrip("/"),
         auth_encryption_key=os.getenv("AUTH_ENCRYPTION_KEY", "development-only-auth-key").strip(),
+        # The machine running this process. Its id has to differ from every
+        # reporting peer, so it is configurable rather than derived from hostname.
+        server_status_node_id=os.getenv("SERVER_STATUS_NODE_ID", "primary").strip() or "primary",
+        server_status_node_label=os.getenv("SERVER_STATUS_NODE_LABEL", "主服务器").strip() or "主服务器",
+        # "id:label,id:label" -- listing a peer here is what makes it render as
+        # missing before its first report ever arrives.
+        server_status_remote_nodes=os.getenv("SERVER_STATUS_REMOTE_NODES", "").strip(),
+        server_status_push_token=os.getenv("SERVER_STATUS_PUSH_TOKEN", "").strip(),
+        server_status_stale_after_seconds=_env_int("SERVER_STATUS_STALE_AFTER_SECONDS", 180, minimum=30),
     )
 
 

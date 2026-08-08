@@ -1139,7 +1139,9 @@ class ServerDatabaseStatusResponse(BaseModel):
     modified_at: datetime
 
 
-class ServerStatusResponse(BaseModel):
+class ServerStatusMetrics(BaseModel):
+    """One machine's readings, with no notion of which machine it came from."""
+
     generated_at: datetime
     health: str
     hostname: str
@@ -1171,6 +1173,45 @@ class ServerStatusResponse(BaseModel):
     backup_database_total_size_bytes: int
     services: list[ServerServiceStatusResponse]
     databases: list[ServerDatabaseStatusResponse]
+
+
+ServerNodeState = Literal["online", "stale", "missing"]
+
+
+class ServerNodeStatusResponse(BaseModel):
+    """A machine in the fleet, which may not have any readings yet.
+
+    `metrics` is null for a node that has never reported or whose stored payload
+    could not be read, so the UI can distinguish "no data" from "all zeroes".
+    """
+
+    node_id: str
+    label: str
+    is_local: bool
+    state: ServerNodeState
+    reported_at: datetime | None
+    age_seconds: int | None
+    message: str | None
+    metrics: ServerStatusMetrics | None
+
+
+class ServerStatusPushRequest(BaseModel):
+    node_id: str = Field(..., min_length=1, max_length=60, pattern=r"^[A-Za-z0-9._-]+$")
+    label: str | None = Field(default=None, max_length=60)
+    metrics: ServerStatusMetrics
+
+
+class ServerStatusPushResponse(BaseModel):
+    node_id: str
+    label: str
+    accepted_at: datetime
+
+
+# The local machine's readings stay at the top level so existing callers (the
+# mobile ServerPage reads hostname/services/... directly) keep working; `nodes`
+# is additive and carries the whole fleet including this machine.
+class ServerStatusResponse(ServerStatusMetrics):
+    nodes: list[ServerNodeStatusResponse] = Field(default_factory=list)
 
 
 class WarehousePayload(BaseModel):
@@ -1339,3 +1380,15 @@ class WarehouseSummaryResponse(BaseModel):
     pending_outbound_count: int
     today_inbound_quantity: int
     today_outbound_quantity: int
+
+
+class ExpenseShortcutRecordRequest(BaseModel):
+    book: str = Field(default="personal", max_length=20)
+    amount: float = Field(..., gt=0, le=99999999)
+    category: str = Field(default="", max_length=50)
+    note: str = Field(default="", max_length=500)
+    date: date_type | None = None
+    transaction_type: str = Field(default="expense", max_length=20)
+    payment_type: str = Field(default="company", max_length=20)
+    payment_account: str = Field(default="", max_length=50)
+    expense_scope: str = Field(default="", max_length=100)

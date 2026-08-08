@@ -4,9 +4,10 @@ import { IonContent, IonPage, IonRefresher, IonRefresherContent, toastController
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { api, ApiError } from '../api'
+import { setAlertCounts } from '../alerts'
 type Alert={key:string;category:string;severity:string;title:string;description:string;route:string;occurred_at?:string;acknowledged:boolean}
 const router=useRouter();const data=ref<{open_count:number;critical_count:number;items:Alert[]}>({open_count:0,critical_count:0,items:[]})
-async function load(event?:{target:{complete:()=>void}}){try{data.value=await api('/system-alerts')}catch(error){const toast=await toastController.create({message:error instanceof ApiError?error.detail:'通知加载失败',duration:2200,color:'danger'});await toast.present()}finally{event?.target.complete()}}
+async function load(event?:{target:{complete:()=>void}}){try{data.value=await api('/system-alerts');setAlertCounts(data.value.open_count,data.value.critical_count)}catch(error){const toast=await toastController.create({message:error instanceof ApiError?error.detail:'通知加载失败',duration:2200,color:'danger'});await toast.present()}finally{event?.target.complete()}}
 function open(alert:Alert){const map:Record<string,string>={inventory:'/tabs/module/warehouse',outbound:'/tabs/module/warehouse',license:'/tabs/list/licenses',task:'/tabs/list/tasks',security:'/tabs/list/audit-logs'};router.push(map[alert.category]||'/tabs/home')}
 async function toggle(alert:Alert){try{await api(`/system-alerts/${encodeURIComponent(alert.key)}`,{method:'PATCH',body:JSON.stringify({acknowledged:!alert.acknowledged})});await load()}catch(error){const toast=await toastController.create({message:error instanceof ApiError?error.detail:'操作失败',duration:2000,color:'danger'});await toast.present()}}
 // The backend sends utcnow() as a naive ISO string, so it has to be tagged as

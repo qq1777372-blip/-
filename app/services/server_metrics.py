@@ -1,3 +1,12 @@
+"""Host metric collection, standard library only.
+
+This is deliberately free of third-party imports so the same code can run on a
+box that has no virtualenv for this project: `scripts/report_server_status.py`
+copies this file to the secondary server and pushes the result back to the main
+site. `app/services/server_status.py` wraps it with the SQLAlchemy engine probe
+for the local node.
+"""
+
 from __future__ import annotations
 
 import os
@@ -9,10 +18,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable
-
-if TYPE_CHECKING:
-    from sqlalchemy.engine import Engine
+from typing import Any, Iterable
 
 
 PROCESS_STARTED_MONOTONIC = time.monotonic()
@@ -235,36 +241,40 @@ def _collect_database_files(database_roots: Iterable[tuple[str, Path]]) -> list[
     return rows
 
 
-def collect_server_status(
-    engine: "Engine | None",
+def compute_health(
+    *,
+    disk_percent: float,
+    memory_percent: float,
+    database_ok: bool,
+    services: Iterable[dict[str, Any]],
+) -> str:
+    """Same thresholds for every node, wherever the numbers were collected."""
+    if not database_ok or disk_percent >= 95:
+        return "critical"
+    if (
+        disk_percent >= 85
+        or memory_percent >= 90
+        or any(not item.get("is_active") for item in services)
+    ):
+        return "warning"
+    return "healthy"
+
+
+def collect_node_metrics(
     base_dir: Path,
     database_roots: Iterable[tuple[str, Path]],
     services: Iterable[tuple[str, str]],
 ) -> dict[str, Any]:
+    """Everything about a host that needs no database engine.
+
+    The caller adds the `database_engine` / `database_connection_status` /
+    `database_latency_ms` / `database_error` / `health` fields, because only it
+    knows whether this node owns the application database.
+    """
     disk = shutil.disk_usage(base_dir)
     memory_total, memory_used, memory_available, memory_percent = _read_memory()
     load_1m, load_5m, load_15m = _read_load_average()
     cpu_percent = _read_cpu_percent()
-
-    # The reporter agent runs this on a machine that has no application database,
-    # so "no engine" is a valid configuration rather than a failure.
-    database_engine = "-"
-    database_connection_status = "not-configured"
-    database_latency_ms: float | None = None
-    database_error: str | None = None
-    if engine is not None:
-        from sqlalchemy import text
-
-        database_engine = engine.dialect.name
-        database_connection_status = "available"
-        started_at = time.perf_counter()
-        try:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
-            database_latency_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
-        except Exception as exc:
-            database_connection_status = "error"
-            database_error = str(exc)[:160]
 
     service_rows = [_collect_service_status(name, label) for name, label in services]
     database_rows = _collect_database_files(database_roots)
@@ -272,20 +282,9 @@ def collect_server_status(
     active_database_total_size = sum(
         item["size_bytes"] for item in database_rows if item["category"] == "active"
     )
-    backup_database_total_size = database_total_size - active_database_total_size
-
-    disk_percent = _percent(disk.used, disk.total)
-    health = "healthy"
-    # "not-configured" is the reporter agent on a machine with no application
-    # database; only a real connection failure counts against health.
-    if database_connection_status == "error" or disk_percent >= 95:
-        health = "critical"
-    elif disk_percent >= 85 or memory_percent >= 90 or any(not item["is_active"] for item in service_rows):
-        health = "warning"
 
     return {
         "generated_at": datetime.now().astimezone(),
-        "health": health,
         "hostname": platform.node() or "-",
         "operating_system": f"{platform.system()} {platform.release()}".strip(),
         "architecture": platform.machine() or "-",
@@ -301,18 +300,14 @@ def collect_server_status(
         "disk_total_bytes": disk.total,
         "disk_used_bytes": disk.used,
         "disk_free_bytes": disk.free,
-        "disk_percent": disk_percent,
+        "disk_percent": _percent(disk.used, disk.total),
         "system_uptime_seconds": _read_system_uptime_seconds(),
         "process_uptime_seconds": int(time.monotonic() - PROCESS_STARTED_MONOTONIC),
         "process_id": os.getpid(),
-        "database_engine": database_engine,
-        "database_connection_status": database_connection_status,
-        "database_latency_ms": database_latency_ms,
-        "database_error": database_error,
         "database_count": len(database_rows),
         "database_total_size_bytes": database_total_size,
         "active_database_total_size_bytes": active_database_total_size,
-        "backup_database_total_size_bytes": backup_database_total_size,
+        "backup_database_total_size_bytes": database_total_size - active_database_total_size,
         "services": service_rows,
         "databases": database_rows,
     }

@@ -35,3 +35,8 @@ _server_sycm_sync_button_*.js
 _dev_cookies.txt
 _dev_login.json
 _*dev*.log
+# `_*dev*.log` misses the launcher's own logs (_local_sycm_stack.err.log had
+# grown to 110MB untracked), and `*.db` misses timestamped backup copies whose
+# name does not end in .db.
+_local_*.log
+*.db.bak-*

@@ -4,6 +4,7 @@ import {
   Bell,
   Box,
   Cellphone,
+  ChatDotSquare,
   Document,
   Fold,
   House,
@@ -68,12 +69,16 @@ const alertGroups = computed<AlertGroup[]>(() => {
     groups.set(alert.category, [...(groups.get(alert.category) ?? []), alert])
   }
 
-  const titleMap: Record<SystemAlertItem['category'], (count: number) => string> = {
+  // 后端 build_system_alerts 会发 data 类（利润为空/停更、库存缺成本价），漏了它
+  // 会让 titleMap[category] 取到 undefined、调用时抛 TypeError，整块 computed 崩掉、
+  // 铃铛面板打不开。可选链兜底：以后后端再加新类别只是文案退化，不会再崩。
+  const titleMap: Partial<Record<SystemAlertItem['category'], (count: number) => string>> = {
     inventory: (count) => `${count} 种商品库存异常`,
     outbound: (count) => `${count} 张出库单待处理`,
     license: (count) => `${count} 项执照到期提醒`,
     task: (count) => `${count} 项任务长时间未完成`,
     security: (count) => `${count} 项登录安全异常`,
+    data: (count) => `${count} 项数据异常`,
   }
 
   return [...groups.entries()]
@@ -83,7 +88,7 @@ const alertGroups = computed<AlertGroup[]>(() => {
       return {
         category,
         severity: sortedItems[0].severity,
-        title: titleMap[category](items.length),
+        title: titleMap[category]?.(items.length) ?? `${items.length} 项待处理提醒`,
         description: criticalCount ? `其中 ${criticalCount} 项紧急，点击立即处理` : sortedItems[0].description,
         count: items.length,
         route: sortedItems[0].route,
@@ -112,7 +117,7 @@ const defaultOpeneds = computed(() => {
     return ['system-management']
   }
 
-  if (['/sycm', '/shop-records', '/peer-shops', '/licenses', '/account-usage', '/mobile-devices'].includes(path)) {
+  if (['/sycm', '/shop-records', '/peer-shops', '/licenses', '/account-usage', '/mobile-devices', '/knowledge'].includes(path)) {
     return ['store']
   }
 
@@ -190,7 +195,10 @@ async function openAlertBusiness(alert: { route: string }) {
 }
 
 function getAlertCategoryLabel(category: SystemAlertItem['category']) {
-  return ({ inventory: '库存', outbound: '出库', license: '执照', task: '任务', security: '安全' })[category]
+  const labels: Partial<Record<SystemAlertItem['category'], string>> = {
+    inventory: '库存', outbound: '出库', license: '执照', task: '任务', security: '安全', data: '数据',
+  }
+  return labels[category] ?? '提醒'
 }
 
 async function loadWebVersion() {
@@ -378,6 +386,10 @@ async function handleUserCommand(command: string | number | object) {
           <el-menu-item v-if="authStore.canAccess('mobile_devices')" index="/mobile-devices">
             <el-icon><Cellphone /></el-icon>
             <span>手机设备</span>
+          </el-menu-item>
+          <el-menu-item index="/knowledge">
+            <el-icon><ChatDotSquare /></el-icon>
+            <span>知识库</span>
           </el-menu-item>
         </el-sub-menu>
 
@@ -706,6 +718,10 @@ async function handleUserCommand(command: string | number | object) {
           <el-menu-item v-if="authStore.canAccess('mobile_devices')" index="/mobile-devices">
             <el-icon><Cellphone /></el-icon>
             <span>手机设备</span>
+          </el-menu-item>
+          <el-menu-item index="/knowledge">
+            <el-icon><ChatDotSquare /></el-icon>
+            <span>知识库</span>
           </el-menu-item>
         </el-sub-menu>
 

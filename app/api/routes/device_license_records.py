@@ -124,13 +124,13 @@ def create_device_license_router(
         if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
             raise HTTPException(status_code=400, detail="浠呮敮鎸?jpg銆乸ng銆亀ebp 鍥剧墖")
         if upload.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-            raise HTTPException(status_code=400, detail="鍥剧墖 MIME 绫诲瀷鏃犳晥")
+            raise HTTPException(status_code=400, detail="图片 MIME 类型无效")
 
         content = await upload.read()
         if not content:
-            raise HTTPException(status_code=400, detail="鍥剧墖鏂囦欢涓虹┖")
+            raise HTTPException(status_code=400, detail="图片文件为空")
         if len(content) > 15 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="鍥剧墖澶у皬涓嶈兘瓒呰繃 15MB")
+            raise HTTPException(status_code=400, detail="图片大小不能超过 15MB")
 
         clear_license_image(record)
 

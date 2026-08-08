@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
-    "@umoteam/editor": "^10.1.0",
     "axios": "^1.15.0",
     "element-plus": "^2.13.7",
     "markdown-it": "^14.1.1",

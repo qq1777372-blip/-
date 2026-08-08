@@ -51,6 +51,12 @@ SIDE_DB_ROOT = PROJECT_ROOT / "_dev_side_dbs"
 DEV_SYCM_UPLOAD_TOKEN = "dev-sycm-upload-token"
 DEV_INTERNAL_SYNC_TOKEN = "dev-internal-sync-token"
 DEV_LICENSE_ADMIN_TOKEN = "dev-license-admin-token"
+DEV_SERVER_STATUS_PUSH_TOKEN = "dev-server-status-push-token"
+
+# Stands in for the second server locally: the reporter child runs on this same
+# box but pushes under its own node id, so the console shows two cards.
+DEV_REPORTER_NODE_ID = "peer-dev"
+DEV_REPORTER_NODE_LABEL = "第二台服务器（本地模拟）"
 
 LICENSE_STUB_PORT = 15000
 DINGTALK_PORT = 15100
@@ -102,6 +108,14 @@ def build_env() -> dict[str, str]:
         "REDIS_ENABLED": "false",
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "utf-8",
+
+        # --- the server-status fleet. Without SERVER_STATUS_REMOTE_NODES the
+        # page shows one card (this machine) and there is nothing to look at; the
+        # reporter child below pushes as this same node id so the second card
+        # fills in with real numbers rather than staying "未上报".
+        "SERVER_STATUS_NODE_LABEL": "本机后端",
+        "SERVER_STATUS_REMOTE_NODES": f"{DEV_REPORTER_NODE_ID}:{DEV_REPORTER_NODE_LABEL}",
+        "SERVER_STATUS_PUSH_TOKEN": DEV_SERVER_STATUS_PUSH_TOKEN,
     })
 
     # The four side sqlite paths, from the initializer so a path can never drift
@@ -134,7 +148,7 @@ def main() -> int:
     parser.add_argument(
         "--only",
         default="",
-        help="Comma-separated subset of: license,dingtalk,backend,collector,app,pc",
+        help="Comma-separated subset of: license,dingtalk,backend,collector,reporter,app,pc",
     )
     args = parser.parse_args()
 
@@ -149,6 +163,24 @@ def main() -> int:
         # --watch keeps polling, so a 同步数据 click is picked up seconds later
         # instead of needing a manual run.
         ("collector", [python, str(DEV_DIR / "fake_collector.py"), "--watch"], PROJECT_ROOT),
+        # Stands in for the second server. It runs on this same box, so its
+        # numbers duplicate the local node's -- the point is that the push ->
+        # store -> merge path is exercised and the console shows two cards.
+        # --interval keeps it reporting, so letting it sit for a few minutes is
+        # also how the "数据过期" state can be seen.
+        (
+            "reporter",
+            [
+                python, str(PROJECT_ROOT / "scripts" / "ops" / "report_server_status.py"),
+                "--base-url", "http://127.0.0.1:8000",
+                "--node-id", DEV_REPORTER_NODE_ID,
+                "--label", DEV_REPORTER_NODE_LABEL,
+                "--disk-path", str(PROJECT_ROOT),
+                "--database-root", f"模拟侧库={SIDE_DB_ROOT}",
+                "--interval", "30",
+            ],
+            PROJECT_ROOT,
+        ),
         # npm run dev inherits the cwd vite.config.ts, which controls the port.
         # Pass --host explicitly so vite binds to 127.0.0.1 and not ::1 (IPv6
         # only); localhost resolves to ::1 on Windows and the app just 404s.
@@ -159,8 +191,14 @@ def main() -> int:
     wanted = {name.strip() for name in args.only.split(",") if name.strip()}
     if wanted:
         specs = [spec for spec in specs if spec[0] in wanted]
-    elif args.no_frontend:
-        specs = [spec for spec in specs if spec[0] not in {"app", "pc"}]
+    else:
+        # The stub collector registers itself as a real device and claims shops,
+        # so it shows up in 采集设备 next to the actual machines and takes their
+        # shops. Opt-in only: ask for it with --only collector when the point is
+        # to exercise the sync path without a Qianniu login.
+        specs = [spec for spec in specs if spec[0] != "collector"]
+        if args.no_frontend:
+            specs = [spec for spec in specs if spec[0] not in {"app", "pc"}]
 
     children: list[tuple[str, subprocess.Popen[bytes]]] = []
     # npm on Windows is a .cmd shim, which only runs through the shell.

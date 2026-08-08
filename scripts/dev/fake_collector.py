@@ -119,6 +119,12 @@ class Collector:
                 "deviceId": self.device_id,
                 "deviceName": self.device_name,
                 "shopIds": shop_ids,
+                # A stub always has its "sessions" available; the real collector
+                # sends 'blocked' plus its own tally when Qianniu holds the
+                # cookie DBs. Reporting it here keeps the console's two-state
+                # display exercised locally.
+                "sessionState": "ready",
+                "sessionDetail": "本地假采集端，无需千牛会话",
             },
         )
         if response.status_code == 503:

@@ -89,7 +89,7 @@ export interface DashboardStats {
   recent_license_records: DashboardRecentLicenseRecord[]
 }
 
-export type SystemAlertCategory = 'inventory' | 'outbound' | 'license' | 'task' | 'security'
+export type SystemAlertCategory = 'inventory' | 'outbound' | 'license' | 'task' | 'security' | 'data'
 export type SystemAlertSeverity = 'critical' | 'warning' | 'info'
 
 export interface SystemAlertItem {
@@ -146,7 +146,22 @@ export interface ServerDatabaseStatus {
   modified_at: string
 }
 
-export interface ServerStatus {
+export type ServerNodeState = 'online' | 'stale' | 'missing'
+
+export interface ServerNodeStatus {
+  node_id: string
+  label: string
+  is_local: boolean
+  state: ServerNodeState
+  reported_at: string | null
+  age_seconds: number | null
+  message: string | null
+  // null when the node has never reported, so the UI can tell "no data" apart
+  // from a machine genuinely reading zero.
+  metrics: ServerStatusMetrics | null
+}
+
+export interface ServerStatusMetrics {
   generated_at: string
   health: 'healthy' | 'warning' | 'critical'
   hostname: string
@@ -178,6 +193,12 @@ export interface ServerStatus {
   backup_database_total_size_bytes: number
   services: ServerServiceStatus[]
   databases: ServerDatabaseStatus[]
+}
+
+// The local machine's readings stay at the top level for existing callers;
+// `nodes` lists the whole fleet, this machine included.
+export interface ServerStatus extends ServerStatusMetrics {
+  nodes: ServerNodeStatus[]
 }
 
 export interface DingTalkProfitRecord {
@@ -764,11 +785,22 @@ export interface SycmSyncRequest {
   results: SycmSyncResult[]
 }
 
+export type SycmSessionState = 'ready' | 'blocked' | 'unknown'
+
 export interface SycmCollectorDevice {
   deviceId: string
   deviceName: string | null
   firstSeenAt: string | null
   lastSeenAt: string | null
   shopCount: number
+  // Reachability only: the agent talked to the backend within the last minute.
   online: boolean
+  // Whether that agent can actually read Qianniu. A running Qianniu locks every
+  // cookie DB, so a reachable agent can still be unable to collect anything.
+  sessionState: SycmSessionState
+  sessionDetail: string
+  sessionReportedAt: string | null
+  // online && sessionState === 'ready', decided by the backend so both
+  // frontends cannot disagree about it.
+  collectable: boolean
 }

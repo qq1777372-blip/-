@@ -1,0 +1,23 @@
+[Unit]
+Description=Zhice AI Knowledge Base
+After=network.target
+
+[Service]
+Type=simple
+User=fastapiproject
+Group=fastapiproject
+WorkingDirectory=/srv/knowledge-base
+Environment=PYTHONUNBUFFERED=1
+Environment=ZHICE_PORT=8765
+Environment=PLAYWRIGHT_BROWSERS_PATH=/srv/knowledge-base/.playwright
+ExecStart=/srv/knowledge-base/.venv/bin/python /srv/knowledge-base/server.py
+Restart=always
+RestartSec=3
+UMask=027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/knowledge-base
+
+[Install]
+WantedBy=multi-user.target
