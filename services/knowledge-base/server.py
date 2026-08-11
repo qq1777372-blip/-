@@ -14,6 +14,7 @@ import urllib.request
 import webbrowser
 import zipfile
 import signal
+import xml.etree.ElementTree as ET
 from pypdf import PdfReader
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from html.parser import HTMLParser
@@ -218,6 +219,61 @@ def split_document(content, limit=1200):
     if current:
         chunks.append(current)
     return chunks or [content[:limit]]
+
+
+def read_uploaded_file(filename, encoded):
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        raise ValueError("文件内容编码不正确")
+    if not raw:
+        raise ValueError("文件内容为空")
+    if len(raw) > 15_000_000:
+        raise ValueError("单个文件不能超过 15MB")
+
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        content = "\n\n".join((page.extract_text() or "").strip() for page in PdfReader(io.BytesIO(raw)).pages).strip()
+        if not content:
+            raise ValueError("PDF 没有可提取的文字，请先对扫描件执行 OCR")
+        content = content[:2_000_000]
+        return content, [], [{"type": "text", "text": content}]
+    if suffix == ".docx":
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                root = ET.fromstring(archive.read("word/document.xml"))
+            namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+            paragraphs = []
+            for paragraph in root.iter(namespace + "p"):
+                text = "".join(node.text or "" for node in paragraph.iter(namespace + "t")).strip()
+                if text:
+                    paragraphs.append(text)
+            content = "\n".join(paragraphs)[:2_000_000]
+        except (KeyError, zipfile.BadZipFile, ET.ParseError):
+            raise ValueError("DOCX 文件损坏或格式不正确")
+        if not content:
+            raise ValueError("DOCX 没有可提取的文字")
+        return content, [], [{"type": "text", "text": content}]
+    if suffix in (".png", ".jpg", ".jpeg", ".webp"):
+        directory = ROOT / "uploaded_images"
+        directory.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{hashlib.sha256(raw).hexdigest()[:24]}{suffix}"
+        (directory / stored_name).write_bytes(raw)
+        image = {"path": f"uploaded_images/{stored_name}", "source": filename}
+        return f"图片资料：{filename}（等待 OCR 识别）", [image], [{"type": "image", **image}]
+    if suffix not in (".txt", ".md", ".markdown", ".csv", ".json"):
+        raise ValueError("仅支持 PDF、DOCX、TXT、Markdown、CSV、JSON 和常用图片")
+    content = ""
+    for encoding in ("utf-8-sig", "gb18030", "utf-16"):
+        try:
+            content = raw.decode(encoding).strip()
+            break
+        except UnicodeDecodeError:
+            continue
+    if not content:
+        raise ValueError("文本文件为空或编码无法识别")
+    content = content[:2_000_000]
+    return content, [], [{"type": "text", "text": content}]
 
 
 def load_search_chunks():
@@ -536,6 +592,40 @@ class Handler(SimpleHTTPRequestHandler):
                 if not re.match(r"^https?://", url):
                     raise ValueError("请输入有效的 HTTP 或 HTTPS 链接")
                 self.send_json(200, {"ok": True, **read_webpage(url)})
+            elif self.path == "/api/documents/import":
+                title = str(data.get("title", "")).strip()[:300]
+                content = str(data.get("content", "")).strip()
+                filename = str(data.get("filename", "")).strip()[:500]
+                if not title or not content:
+                    raise ValueError("文件标题或正文不能为空")
+                if len(content) > 2_000_000:
+                    raise ValueError("单个文本文件不能超过 200 万字符")
+                document_id = "upload-" + hashlib.sha256(f"{title}:{content}".encode("utf-8")).hexdigest()[:24]
+                document = {
+                    "id": document_id,
+                    "title": title,
+                    "category": "上传资料",
+                    "source": filename or "AI 工作台上传",
+                    "updated": time.strftime("%Y-%m-%d"),
+                    "path": filename,
+                    "content": content,
+                    "images": [],
+                    "blocks": [{"type": "text", "text": content}],
+                }
+                storage.upsert_document(document)
+                self.send_json(200, {"ok": True, "document": storage.get_document(document_id)})
+            elif self.path == "/api/documents/import-file":
+                filename = Path(str(data.get("filename", "")).strip()).name[:500]
+                if not filename:
+                    raise ValueError("文件名不能为空")
+                content, images, blocks = read_uploaded_file(filename, data.get("data", ""))
+                title = str(data.get("title", "")).strip()[:300] or Path(filename).stem
+                document_id = "upload-" + hashlib.sha256(f"{filename}:{data.get('data', '')}".encode("utf-8")).hexdigest()[:24]
+                document = {"id": document_id, "title": title, "category": "上传资料", "source": filename,
+                            "updated": time.strftime("%Y-%m-%d"), "path": filename, "content": content,
+                            "images": images, "blocks": blocks}
+                storage.upsert_document(document)
+                self.send_json(200, {"ok": True, "document": storage.get_document(document_id)})
             elif self.path == "/api/import-alidocs":
                 global ALIDOCS_PROCESS
                 status = alidocs_status()
@@ -606,8 +696,6 @@ class Handler(SimpleHTTPRequestHandler):
                 documents = [{"title": "连接测试", "source": "系统", "updated": "", "content": "这是一次连接测试。"}] if is_test else data.get("documents", [])
                 if not question:
                     raise ValueError("问题不能为空")
-                if not documents:
-                    raise ValueError("知识库中没有检索到相关资料")
                 image = "" if is_test else str(data.get("image", ""))
                 self.send_json(200, {"ok": True, "answer": call_model(config, question, documents, image)})
             else:

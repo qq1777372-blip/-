@@ -5,7 +5,7 @@ import {
   calculatorOutline,
   cubeOutline,
   documentTextOutline,
-  hardwareChipOutline,
+  sparklesOutline,
   keyOutline,
   linkOutline,
   peopleOutline,
@@ -44,17 +44,17 @@ export const appModules: AppModule[] = [
   { key: 'company-expenses', title: '公司记账', subtitle: '流水、报销与票据', permission: 'task_bookkeeping', icon: calculatorOutline, color: '#0ea5e9', route: '/tabs/list/company-expenses', group: '任务记账' },
 
   { key: 'shops', title: '店铺账号', subtitle: '店铺台账和资料', permission: 'shop_records', icon: storefrontOutline, color: '#14b8a6', route: '/tabs/list/shops', group: '店铺管理' },
-  { key: 'peers', title: '同行店铺', subtitle: '竞品和同行资料', permission: 'peer_shops', icon: businessOutline, color: '#10b981', route: '/tabs/list/peers', group: '店铺管理' },
-  { key: 'licenses', title: '执照档案', subtitle: '主体资料与到期提醒', permission: 'licenses', icon: archiveOutline, color: '#ec4899', route: '/tabs/list/licenses', group: '店铺管理' },
-  { key: 'account-usage', title: '账号使用记录', subtitle: '内部账号和设备使用', permission: 'account_usage', icon: peopleOutline, color: '#0f766e', route: '/tabs/list/account-usage', group: '店铺管理' },
-  { key: 'devices', title: '手机设备', subtitle: '登录设备管理', permission: 'mobile_devices', icon: phonePortraitOutline, color: '#06b6d4', route: '/tabs/list/devices', group: '店铺管理' },
+  { key: 'peers', title: '同行店铺', subtitle: '竞品和同行资料', permission: 'peer_shops', icon: businessOutline, color: '#10b981', route: '/tabs/manage/peers', group: '店铺管理' },
+  { key: 'licenses', title: '执照档案', subtitle: '主体资料与到期提醒', permission: 'licenses', icon: archiveOutline, color: '#ec4899', route: '/tabs/manage/licenses', group: '店铺管理' },
+  { key: 'account-usage', title: '账号使用记录', subtitle: '内部账号和设备使用', permission: 'account_usage', icon: peopleOutline, color: '#0f766e', route: '/tabs/manage/account-usage', group: '店铺管理' },
+  { key: 'devices', title: '手机设备', subtitle: '登录设备管理', permission: 'mobile_devices', icon: phonePortraitOutline, color: '#06b6d4', route: '/tabs/manage/devices', group: '店铺管理' },
 
   // One entry, not one per tab. WarehousePage already carries its own tab bar
   // (库存/仓库/商品/入库/出库/流水), so five tiles opening the same page only made
   // the grid wrap 4+1 and hid the fact that 商品 had no tile at all.
   { key: 'warehouse', title: '仓储管理', subtitle: '库存、出入库与基础资料', permission: 'warehouse', icon: cubeOutline, color: '#f97316', route: '/tabs/module/warehouse', group: '仓储管理' },
 
-  { key: 'knowledge', title: '知识问答', subtitle: '问答、管理与数据质量', icon: hardwareChipOutline, color: '#7c3aed', route: '/tabs/module/knowledge', group: '工具' },
+  { key: 'ai-workspace', title: 'AI 工作台', subtitle: '多模型对话、知识库与智能体', icon: sparklesOutline, color: '#1677ff', route: '/tabs/module/ai-workspace', group: '工具' },
   { key: 'audit-logs', title: '安全日志', subtitle: '登录与敏感操作记录', roles: ['superadmin'], icon: shieldCheckmarkOutline, color: '#ef4444', route: '/tabs/list/audit-logs', group: '系统管理' },
   { key: 'settings', title: '系统设置', subtitle: '系统参数与提醒规则', roles: ['superadmin'], icon: settingsOutline, color: '#475569', route: '/tabs/settings', group: '系统管理' },
 ]

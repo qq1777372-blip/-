@@ -6,16 +6,21 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "build:native": "vue-tsc -b && vite build --mode native --outDir ../app-frontend-native-dist",
+    "test:e2e": "playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
     "@ionic/vue": "^8.8.16",
     "@ionic/vue-router": "^8.8.16",
     "ionicons": "^8.1.0",
+    "markdown-it": "^14.1.1",
     "vue": "^3.5.40",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.10.0",
     "@vitejs/plugin-vue": "^6.0.1",
     "@vue/tsconfig": "^0.9.1",

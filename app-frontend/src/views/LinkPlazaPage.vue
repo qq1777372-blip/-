@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
-import { IonContent, IonIcon, IonPage, IonRefresher, IonRefresherContent, actionSheetController, alertController, toastController } from '@ionic/vue'
+import { computed, nextTick, ref } from 'vue'
+import { IonContent, IonIcon, IonPage, IonRefresher, IonRefresherContent, actionSheetController, alertController, toastController, onIonViewWillEnter } from '@ionic/vue'
 import { addCircleOutline, chatbubbleEllipsesOutline, documentTextOutline, imageOutline, searchOutline } from 'ionicons/icons'
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
@@ -35,6 +35,7 @@ const records=ref<SavedLink[]>([])
 const query=ref('')
 const tab=ref<Tab>('latest')
 const loading=ref(true)
+const actionId=ref<number|null>(null)
 const feedScroll=ref<HTMLElement|null>(null)
 const tabs=computed(()=>[
   {key:'latest' as Tab,label:'最新',count:records.value.length},
@@ -62,6 +63,43 @@ async function load(event?:{target:{complete:()=>void}}){
   }
 }
 function canEdit(item:SavedLink){return session.user?.role==='superadmin'||item.author_user_id===session.user?.id}
+function replaceRecord(updated:SavedLink){records.value=records.value.map(item=>item.id===updated.id?updated:item)}
+async function togglePin(item:SavedLink){
+  if(actionId.value!==null)return
+  actionId.value=item.id
+  try{
+    const updated=await api<SavedLink>(`/saved-links/${item.id}/pin`,{method:item.is_pinned?'DELETE':'POST'})
+    replaceRecord(updated)
+    const toast=await toastController.create({message:item.is_pinned?'已取消置顶':'帖子已置顶',duration:1500,color:'success'})
+    await toast.present()
+  }catch(error){
+    const toast=await toastController.create({message:error instanceof ApiError?error.detail:'置顶操作失败',duration:2200,color:'danger'})
+    await toast.present()
+  }finally{actionId.value=null}
+}
+async function pushPost(item:SavedLink){
+  if(actionId.value!==null)return
+  const alert=await alertController.create({
+    header:'推送帖子',
+    message:`确定立即将“${item.title}”推送到钉钉群吗？`,
+    buttons:[
+      {text:'取消',role:'cancel'},
+      {text:'立即推送',handler:async()=>{
+        actionId.value=item.id
+        try{
+          const updated=await api<SavedLink>(`/saved-links/${item.id}/push`,{method:'POST',body:JSON.stringify({scheduled_at:null})})
+          replaceRecord(updated)
+          const toast=await toastController.create({message:'帖子已推送到钉钉群',duration:1800,color:'success'})
+          await toast.present()
+        }catch(error){
+          const toast=await toastController.create({message:error instanceof ApiError?error.detail:'帖子推送失败',duration:2400,color:'danger'})
+          await toast.present()
+        }finally{actionId.value=null}
+      }},
+    ],
+  })
+  await alert.present()
+}
 async function openPublishMenu(){
   const sheet=await actionSheetController.create({
     header:'选择发布方式',
@@ -95,7 +133,9 @@ function pushClass(item:SavedLink){return item.push_status?`saved-link-post__bad
 function galleryClass(item:SavedLink){return item.images.length===1?'saved-link-gallery--single':item.images.length===2?'saved-link-gallery--double':''}
 function descriptionHasUrl(value?:string){urlPattern.lastIndex=0;return urlPattern.test(value||'')}
 function selectTab(key:Tab){tab.value=key;query.value='';nextTick(()=>feedScroll.value?.scrollTo({top:0,behavior:'auto'}))}
-onMounted(load)
+// Ionic keeps tab pages mounted in its navigation stack. Refresh whenever this
+// page becomes active so newly published or edited posts appear after Back.
+onIonViewWillEnter(load)
 </script>
 
 <template>
@@ -168,6 +208,8 @@ onMounted(load)
                     <span class="saved-link-post__footer-note">帖子 #{{ item.id }}</span>
                     <div class="saved-link-post__actions">
                       <button @click="router.push(`/tabs/detail/links/${item.id}`)">阅读全文</button>
+                      <button v-if="canEdit(item)" :disabled="actionId===item.id" @click="togglePin(item)">{{ item.is_pinned?'取消置顶':'置顶' }}</button>
+                      <button v-if="canEdit(item)" :disabled="actionId===item.id" @click="pushPost(item)">推送</button>
                       <button v-if="canEdit(item)" @click="router.push(`/tabs/form/links/${item.id}`)">编辑</button>
                       <button v-if="canEdit(item)" class="danger" @click="remove(item)">删除</button>
                     </div>

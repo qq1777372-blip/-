@@ -37,7 +37,7 @@ type Device = {
   sessionState: 'ready' | 'blocked' | 'unknown' | string
   sessionDetail: string
 }
-type SyncResult = { shopId: string; shopName: string; success: boolean }
+type SyncResult = { shopId: string; shopName: string; success: boolean; error?: string }
 type SyncRequest = { id: number; status: 'pending' | 'running' | 'completed' | 'failed'; error: string; results?: SyncResult[] }
 type Period = 'today' | 'yesterday' | 'recent7' | 'recent30'
 type View = 'overview' | 'sources' | 'details' | 'status'
@@ -194,7 +194,7 @@ async function syncData() {
     // collector program, so without this the button just spins for minutes with
     // nothing on screen explaining what it is waiting for.
     view.value = 'status'
-    for (let attempt = 0; attempt < 90; attempt += 1) {
+    for (let attempt = 0; attempt < 45; attempt += 1) {
       const current = await api<SyncRequest | null>('/api/sycm/sync-requests/latest')
       syncTask.value = current
       if (current?.id === task.id && current.status === 'completed') {
@@ -207,7 +207,7 @@ async function syncData() {
     }
     // Falling out of the loop used to be silent, which read as "the button does
     // nothing". Nobody claimed the task -- no collector is online.
-    throw new Error('等待采集端超时：任务已排队，但没有采集机认领。请确认采集程序正在运行。')
+    throw new Error('同步确认超时，按钮已恢复。请检查采集器状态后重试。')
   } catch (error) {
     const message = error instanceof ApiError ? error.detail : error instanceof Error ? error.message : '同步失败'
     const precondition = error instanceof SyncPreconditionError
@@ -365,7 +365,10 @@ onMounted(() => load())
               <div v-if="!syncTask?.results?.length" class="sc-empty">{{ syncEmptyHint }}</div>
               <div v-else class="sc-status-list">
                 <div v-for="result in syncTask.results" :key="result.shopId" class="sc-status">
-                  <span>{{ result.shopName || result.shopId }}</span>
+                  <span>
+                    {{ result.shopName || result.shopId }}
+                    <small v-if="result.error" class="sc-shop-id">{{ result.error }}</small>
+                  </span>
                   <strong :class="result.success ? 'ok' : 'fail'">{{ result.success ? '成功' : '失败' }}</strong>
                 </div>
               </div>

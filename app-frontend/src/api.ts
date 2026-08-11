@@ -1,4 +1,5 @@
 import { setOnline } from './network'
+import { apiUrl } from './runtime'
 
 export type CurrentUser = {
   id: number
@@ -34,6 +35,19 @@ export function isNetworkError(error: unknown): error is ApiNetworkError {
   return error instanceof ApiNetworkError
 }
 
+function normalizeBackendUrls(value: unknown, key = ''): unknown {
+  if (typeof value === 'string') {
+    return value.startsWith('/') && /(?:url|src|image|avatar|attachment)/i.test(key) ? apiUrl(value) : value
+  }
+  if (Array.isArray(value)) return value.map((item) => normalizeBackendUrls(item, key))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [childKey, normalizeBackendUrls(childValue, childKey)]),
+    )
+  }
+  return value
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
@@ -52,5 +66,5 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(response.status, body.detail || `请求失败（${response.status}）`)
   }
   if (response.status === 204) return undefined as T
-  return response.json() as Promise<T>
+  return normalizeBackendUrls(await response.json()) as T
 }

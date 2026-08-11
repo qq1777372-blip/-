@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import axios from 'axios'
 import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchLoginCaptcha } from '../api'
+import { fetchLoginCaptcha, fetchSystemBranding } from '../api'
 import { useAuthStore } from '../stores/auth'
 
 const REMEMBER_LOGIN_KEY = 'ruoshop-remembered-login'
@@ -18,6 +18,7 @@ const captchaLoading = ref(false)
 const captchaRequired = ref(false)
 const totpRequired = ref(false)
 const rememberLogin = ref(false)
+const branding = ref({ system_name: '内部管理系统', system_subtitle: '任务记账与店铺后台', system_logo: '' })
 const form = reactive({
   username: '',
   password: '',
@@ -140,6 +141,7 @@ async function submit() {
 
 onMounted(() => {
   loadRememberedLogin()
+  void fetchSystemBranding().then((value) => { branding.value = value }).catch(() => undefined)
 })
 </script>
 
@@ -147,8 +149,8 @@ onMounted(() => {
   <div class="auth-shell">
     <div class="auth-card">
       <div class="auth-brand">
-        <div class="auth-logo" aria-hidden="true">RS</div>
-        <h1>内部管理系统</h1>
+        <div class="auth-logo"><img v-if="branding.system_logo" :src="branding.system_logo" alt="系统 Logo"/><span v-else>{{ branding.system_name.trim().slice(0, 2).toUpperCase() || 'RS' }}</span></div>
+        <h1>{{ branding.system_name }}</h1>
         <p>管理员登录</p>
       </div>
 
@@ -232,6 +234,12 @@ onMounted(() => {
   color: #fff;
   font-size: 15px;
   font-weight: 700;
+  overflow: hidden;
+}
+.auth-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .auth-captcha-row {

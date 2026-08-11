@@ -41,18 +41,13 @@ const apiPrefixes = [
 // its own static page at `/` and its API under `/api/`, so both prefixes are
 // rewritten here exactly the way nginx rewrites them in production. Sending
 // these to `backend` instead yields 404s on every knowledge request.
-const knowledgeBackend = process.env.VITE_DEV_KNOWLEDGE ?? 'http://127.0.0.1:8765'
+const aiBackend = process.env.VITE_DEV_AI ?? 'http://127.0.0.1:8766'
 
 const knowledgeProxy = {
-  '^/knowledge-api/': {
-    target: knowledgeBackend,
+  '^/ai-api/': {
+    target: aiBackend,
     changeOrigin: true,
-    rewrite: (path: string) => path.replace(/^\/knowledge-api\//, '/api/'),
-  },
-  '^/knowledge/': {
-    target: knowledgeBackend,
-    changeOrigin: true,
-    rewrite: (path: string) => path.replace(/^\/knowledge\//, '/'),
+    rewrite: (path: string) => path.replace(/^\/ai-api\//, '/api/'),
   },
 }
 

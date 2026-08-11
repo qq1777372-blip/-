@@ -60,6 +60,13 @@
 前端表现为知识问答整页 404。登录鉴权完全由 `auth_request` 提供，
 知识库服务自身不校验会话，删掉 `auth_request` 等于把知识库公开。
 
+## AI 工作台（独立服务，代码在 `services/ai-workspace/`）
+
+新 AI 工作台与旧知识问答完全分离，监听 `127.0.0.1:8766`，生产目录为
+`/srv/ai-workspace`，systemd 模板为 `deploy/systemd/ai-workspace.service.template`。
+Nginx 的 `/ai-api/` 通过 `auth_request` 校验主站登录后转发到该服务 `/api/`。
+运行数据保存在 `/srv/ai-workspace/ai_workspace.db` 和 `files/`，均不入 Git。
+
 ## 目录内容
 
 ```
@@ -69,6 +76,7 @@ deploy/
 ├── systemd/
 │   ├── fastapiproject.service.template    主服务单元
 │   ├── knowledge-base.service.template    知识问答服务单元
+│   ├── ai-workspace.service.template       AI 工作台服务单元
 │   └── drop-ins.template.md               5 个 drop-in 配置说明
 └── nginx/
     └── xiaoxu.conf.template               站点配置

@@ -506,6 +506,38 @@ a {
   }
 }
 
+/* Keep every desktop dialog inside the viewport. The header and actions stay
+   visible while long forms, tables, and details scroll in the body. */
+.el-overlay-dialog {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 24px;
+}
+
+.el-overlay-dialog .el-dialog {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100dvh - 48px);
+  margin: 0 auto !important;
+  overflow: hidden;
+}
+
+.el-overlay-dialog .el-dialog__header,
+.el-overlay-dialog .el-dialog__footer {
+  flex: none;
+}
+
+.el-overlay-dialog .el-dialog__body {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 @media (max-width: 900px) {
   .filter-panel,
   .grid-two {
@@ -610,8 +642,13 @@ a {
   .el-overlay-dialog .el-dialog {
     width: calc(100vw - 12px) !important;
     max-width: none !important;
+    max-height: calc(100dvh - 16px) !important;
     margin: 8px auto !important;
     border-radius: 22px !important;
+  }
+
+  .el-overlay-dialog {
+    padding: 0;
   }
 
   .el-overlay-dialog .el-dialog__body {

@@ -24,6 +24,7 @@ from schemas import (
     AuditLogResponse,
     SystemAlertListResponse,
     SystemAlertStatusRequest,
+    SystemBrandingResponse,
     SystemSettingsResponse,
 )
 
@@ -118,6 +119,11 @@ def create_settings_router(
         )
         commit_session(db, default_detail="Failed to update system alert")
         return list_system_alerts(db=db, _=current_user)
+
+    @router.get("/system-branding", response_model=SystemBrandingResponse, summary="Read public system branding")
+    def read_system_branding(db: Session = Depends(get_db)):
+        settings = get_system_settings(db)
+        return {key: settings[key] for key in ("system_name", "system_subtitle", "system_logo")}
 
     @router.get("/system-settings", response_model=SystemSettingsResponse, summary="Read system settings")
     def read_system_settings(

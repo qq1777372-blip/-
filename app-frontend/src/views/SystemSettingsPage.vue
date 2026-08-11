@@ -16,6 +16,9 @@ import { network } from '../network'
 import { session } from '../session'
 
 const form = reactive({
+  system_name: '内部管理系统',
+  system_subtitle: '任务记账与店铺后台',
+  system_logo: '',
   license_expiry_days: 30,
   stale_task_days: 3,
   login_failure_threshold: 3,
@@ -36,6 +39,7 @@ const savedCategories = ref<string[]>([])
 const categorySource = ref('')
 const canEditCategories = computed(() => ['editor', 'superadmin'].includes(session.user?.role || ''))
 const categoriesDirty = computed(() => JSON.stringify(categories.value) !== JSON.stringify(savedCategories.value))
+function selectLogo(event:Event){const file=(event.target as HTMLInputElement).files?.[0];if(!file)return;if(file.size>500_000)return void toast('Logo 图片不能超过 500KB','warning');const reader=new FileReader();reader.onload=()=>{form.system_logo=String(reader.result||'')};reader.onerror=()=>void toast('Logo 读取失败','danger');reader.readAsDataURL(file)}
 
 async function toast(message: string, color: string, duration = 2200) {
   const element = await toastController.create({ message, duration, color })
@@ -191,6 +195,7 @@ onIonViewWillEnter(load)
     <PageHeader title="系统设置" subtitle="后台规则、提醒与消费分类" back />
     <IonContent>
       <main class="page-pad system-settings">
+        <section class="branding-panel"><h2>系统品牌</h2><div class="branding-preview"><img v-if="form.system_logo" :src="form.system_logo" alt="Logo 预览"><i v-else>{{form.system_name.trim().slice(0,2).toUpperCase()||'RS'}}</i><div><b>{{form.system_name||'系统名称'}}</b><small>{{form.system_subtitle||'系统副标题'}}</small></div></div><label>系统名称<input v-model="form.system_name" maxlength="40"></label><label>副标题<input v-model="form.system_subtitle" maxlength="60"></label><div class="logo-actions"><label>上传 Logo<input hidden type="file" accept="image/png,image/jpeg,image/webp" @change="selectLogo"></label><button v-if="form.system_logo" @click="form.system_logo=''">恢复文字标识</button></div><small>建议使用方形图片，最大 500KB</small></section>
         <section class="settings-group">
           <h2>规则参数</h2>
           <label><span><b>执照到期提醒</b><small>提前多少天提醒</small></span><input v-model.number="form.license_expiry_days" type="number"><em>天</em></label>
@@ -236,4 +241,5 @@ onIonViewWillEnter(load)
 
 <style scoped>
 .system-settings{display:grid;gap:14px}.settings-group,.category-panel{overflow:hidden;background:var(--app-card);border-radius:14px}.settings-group h2{margin:0;padding:12px 14px 7px;color:var(--app-muted);font-size:11px;font-weight:500}.settings-group label{min-height:57px;display:grid;grid-template-columns:1fr 64px auto;gap:7px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--app-line)}.settings-group label:last-child{border-bottom:0}.settings-group b,.settings-group small{display:block}.settings-group b{font-size:14px}.settings-group small{margin-top:3px;color:var(--app-muted);font-size:10px}.settings-group input[type=number]{width:64px;padding:7px;border:1px solid var(--app-line);border-radius:8px;text-align:right;color:var(--app-text);background:transparent}.settings-group em{color:var(--app-muted);font-size:11px;font-style:normal}.settings-group .switch-row{grid-template-columns:1fr auto}.switch-row input{width:42px;height:24px;accent-color:var(--app-blue)}.primary-action{height:48px;border:0;border-radius:13px;color:white;background:var(--app-blue);font-size:15px;font-weight:700}.primary-action:disabled{opacity:.5}.category-panel header{display:flex;align-items:center;justify-content:space-between;padding:13px 14px;border-bottom:1px solid var(--app-line)}.category-panel h2{margin:0;font-size:16px}.category-panel header small,.category-panel article small{display:block;margin-top:3px;color:var(--app-muted);font-size:10px}.category-panel button{padding:7px 9px;border:1px solid var(--app-line);border-radius:8px;color:#2563eb;background:transparent;font:inherit;font-size:11px}.category-panel button:disabled{opacity:.3}.category-panel article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--app-line)}.category-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.category-actions .danger{color:#dc2626}.category-panel aside{padding:10px 14px;color:#b45309;background:#fffbeb;font-size:10px;line-height:1.6}.category-panel footer{display:flex;justify-content:space-between;gap:10px;padding:12px 14px}.category-panel footer button{flex:1}.category-panel footer .save-category{color:#fff;border-color:#1677ff;background:#1677ff}
+.branding-panel{padding:14px;background:var(--app-card);border-radius:14px}.branding-panel h2{margin:0 0 12px;font-size:16px}.branding-preview{display:flex;align-items:center;gap:10px;margin-bottom:13px;padding:12px;border:1px solid var(--app-line);border-radius:10px}.branding-preview img,.branding-preview i{width:44px;height:44px;display:grid;place-items:center;object-fit:contain;border-radius:8px;color:#fff;background:#1677ff;font-style:normal;font-weight:700}.branding-preview b,.branding-preview small{display:block}.branding-preview small,.branding-panel>small{margin-top:4px;color:var(--app-muted);font-size:10px}.branding-panel>label{display:grid;gap:5px;margin-bottom:10px;color:var(--app-muted);font-size:11px}.branding-panel>label input{height:40px;padding:0 10px;border:1px solid var(--app-line);border-radius:8px;color:var(--app-text);background:transparent}.logo-actions{display:flex;gap:8px;margin-bottom:8px}.logo-actions label,.logo-actions button{padding:8px 10px;border:1px solid var(--app-line);border-radius:8px;color:#1677ff;background:transparent;font-size:11px}
 </style>

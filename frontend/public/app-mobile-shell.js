@@ -93,7 +93,6 @@
     ["\u8fd0\u8425\u5de5\u4f5c\u53f0","\u5e38\u7528\u529f\u80fd","/dashboard"],
     ["\u670d\u52a1\u5668\u8fd0\u884c","\u5e38\u7528\u529f\u80fd","/server-status"],
     ["\u94fe\u63a5\u5e7f\u573a","\u5e38\u7528\u529f\u80fd","/links"],
-    ["\u77e5\u8bc6\u5e93","\u5e38\u7528\u529f\u80fd","/knowledge"],
     ["\u5361\u5bc6\u7ba1\u7406","\u6388\u6743\u7ba1\u7406","/license-keys"],
     ["\u8f6f\u4ef6\u8d26\u53f7","\u6388\u6743\u7ba1\u7406","/software-users"],
     ["\u4efb\u52a1\u8bb0\u5f55","\u4efb\u52a1\u8bb0\u8d26","/task-bookkeeping/records"],

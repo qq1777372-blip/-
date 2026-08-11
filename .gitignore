@@ -19,6 +19,15 @@ frontend/.git.misplaced/
 app-frontend/node_modules/
 app-frontend/src/**/*.bak*
 app-frontend-dist/
+services/ai-workspace/files/
+services/ai-workspace/legacy-assets/
+services/ai-workspace/_*.log
+app-frontend-native-dist/
+app-frontend/test-results/
+build-check.log
+frontend/build-check.log
+_spec_expenses.json
+*.bak
 app/**/*.bak-*
 app/**/*.pre-*
 app/**/*.rollback-*

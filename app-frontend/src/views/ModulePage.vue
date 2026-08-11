@@ -8,7 +8,6 @@ const route = useRoute(); const router = useRouter()
 const config = computed(() => ({
   warehouse: { title: '仓储管理', note: '库存、出入库和基础资料', icon: cubeOutline, actions: [['库存总览','/tabs/list/inventory'],['入库管理','/tabs/list/inbound'],['出库发货','/tabs/list/outbound'],['库存流水','/tabs/list/stock-movements']] },
   server: { title: '服务器运行', note: '服务器资源与运行状态', icon: serverOutline, actions: [['运行状态','/tabs/module/server']] },
-  knowledge: { title: '知识问答', note: '知识问答、知识管理与数据质量', icon: chatbubbleEllipsesOutline, actions: [['知识问答','/tabs/module/knowledge']] },
   approvals: { title: '审批中心', note: '集中处理待审批事项', icon: chatbubbleEllipsesOutline, actions: [['公司消费审批','/tabs/list/company-expenses']] },
 }[String(route.params.moduleKey)] || { title: '功能模块', note: '移动端页面', icon: cubeOutline, actions: [] as string[][] }))
 const open = (path: string) => router.push(path)

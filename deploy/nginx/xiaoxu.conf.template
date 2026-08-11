@@ -9,6 +9,12 @@
 #   18000 —— 旧软件管理 API，经 SSH 隧道转发到 121.196.150.21
 #   18080 —— WpfApp1 安装包分发（traditional 更新源）
 
+map $http_origin $native_app_cors_origin {
+    default "";
+    "capacitor://localhost" $http_origin;
+    "ionic://localhost" $http_origin;
+}
+
 server {
     listen 80;
     listen [::]:80;
@@ -159,6 +165,48 @@ server {
         proxy_send_timeout 300s;
         proxy_read_timeout 300s;
         proxy_buffering off;
+    }
+
+    # 新 AI 工作台独立服务。与旧知识问答分开部署和存储。
+    location = /__ai_workspace_auth {
+        internal;
+        proxy_pass http://127.0.0.1:8000/auth/me;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
+    location ^~ /ai-api/ {
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin $native_app_cors_origin always;
+            add_header Access-Control-Allow-Credentials "true" always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin $native_app_cors_origin always;
+        add_header Access-Control-Allow-Credentials "true" always;
+        add_header Vary Origin always;
+        auth_request /__ai_workspace_auth;
+        auth_request_set $ai_workspace_user $upstream_http_x_authenticated_user;
+        auth_request_set $ai_workspace_role $upstream_http_x_authenticated_role;
+        proxy_pass http://127.0.0.1:8766/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Authenticated-User $ai_workspace_user;
+        proxy_set_header X-Authenticated-Role $ai_workspace_role;
+        proxy_set_header X-Workspace-User "";
+        proxy_set_header X-Workspace-Role "";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+        proxy_request_buffering off;
     }
 
     # 本项目：/ui、/app、/api/sycm 等全部由 FastAPI 处理

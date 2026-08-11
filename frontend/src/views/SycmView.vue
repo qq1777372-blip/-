@@ -125,8 +125,16 @@ const visibleShops = computed(() =>
   selectedShop.value ? shops.value.filter((shop) => shop.shopId === selectedShop.value) : shops.value,
 )
 
+const failedShopIds = computed(() => new Set(
+  (syncTask.value?.status === 'completed' ? syncTask.value.results : [])
+    .filter((result) => result.success === false && result.shopId)
+    .map((result) => String(result.shopId)),
+))
+
+const currentShops = computed(() => visibleShops.value.filter((shop) => !failedShopIds.value.has(shop.shopId)))
+
 const kpiCards = computed(() => {
-  const list = visibleShops.value
+  const list = currentShops.value
   const uv = sumMetric(list, 'uv')
   const buyers = sumMetric(list, 'payByrCnt')
   const amount = sumMetric(list, 'payAmt')
@@ -167,6 +175,7 @@ const overviewRows = computed(() =>
         rank: index + 1,
         shopId: shop.shopId,
         shopName: shop.shopName || shop.shopId,
+        sessionFailed: failedShopIds.value.has(shop.shopId),
         amount: formatMoney(amount),
         uv: formatNumber(uv),
         buyers: formatNumber(buyers),
@@ -219,7 +228,7 @@ const sourceRows = computed(() => {
   if (period.value !== 'today') return []
   const merged = new Map<string, { name: string; uv: number; buyers: number; amount: number }>()
 
-  visibleShops.value.forEach((shop) => {
+  currentShops.value.forEach((shop) => {
     const tree = Array.isArray(shop.sourceTree) ? shop.sourceTree : []
     tree.forEach((node) => {
       const source = node as Record<string, { value?: unknown } | undefined>
@@ -277,7 +286,7 @@ const detailDefinitions: { field: string; label: string; type: 'number' | 'money
 
 const detailCards = computed(() =>
   detailDefinitions
-    .map((item) => ({ ...item, raw: sumMetric(visibleShops.value, item.field) }))
+    .map((item) => ({ ...item, raw: sumMetric(currentShops.value, item.field) }))
     .filter((item) => item.raw !== null)
     .map((item) => ({
       field: item.field,
@@ -399,7 +408,7 @@ async function startSync() {
     const task = await createSycmSyncRequest()
     syncTask.value = task
 
-    for (let attempt = 0; attempt < 90; attempt += 1) {
+    for (let attempt = 0; attempt < 45; attempt += 1) {
       if (syncCancelled) return
       const current = await fetchSycmLatestSyncRequest()
       if (syncCancelled) return
@@ -419,7 +428,7 @@ async function startSync() {
       await waitFor(2000)
     }
     if (!syncCancelled) {
-      ElMessage.warning('同步超时，请稍后在同步状态中查看结果')
+      ElMessage.warning('同步确认超时，按钮已恢复。请检查采集器状态后重试')
     }
   } catch (error) {
     if (!syncCancelled) {
@@ -561,6 +570,7 @@ onBeforeUnmount(() => {
                 <span class="sycm-shop-text">
                   <strong>{{ row.shopName }}</strong>
                   <small>{{ row.shopId }}</small>
+                  <el-tag v-if="row.sessionFailed" type="danger" size="small">会话失效</el-tag>
                 </span>
               </div>
             </template>

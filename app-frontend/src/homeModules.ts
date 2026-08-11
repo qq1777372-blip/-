@@ -33,7 +33,6 @@ export const defaultHomeKeys = [
   'shops',
   'warehouse',
   'links',
-  'knowledge',
 ]
 
 export function readHomeKeys() {

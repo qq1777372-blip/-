@@ -1,0 +1,9 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import MarkdownIt from 'markdown-it'
+const route=useRoute(),loading=ref(true),error=ref(''),share=ref<Record<string,any>>({}),markdown=new MarkdownIt({breaks:true,linkify:true})
+onMounted(async()=>{try{const response=await fetch(`/ai-api/shares?id=${encodeURIComponent(String(route.params.id))}`);const data=await response.json();if(!response.ok)throw new Error(data.error||'分享加载失败');share.value=data.share||{}}catch(reason){error.value=reason instanceof Error?reason.message:'分享加载失败'}finally{loading.value=false}})
+</script>
+<template><main><header><small>AI SHARED CHAT</small><h1>{{share.title||'共享会话'}}</h1><p>只读会话</p></header><div v-if="loading" class="state">正在加载…</div><div v-else-if="error" class="state error">{{error}}</div><section v-else><article v-for="message in share.messages||[]" :key="message.id" :class="message.role"><b>{{message.role==='user'?'用户':'AI'}}</b><div v-html="markdown.render(message.content||'')"></div></article></section></main></template>
+<style scoped>main{min-height:100vh;padding:28px 16px;background:var(--ion-background-color,#fff);color:var(--app-text,#172033)}header,section{max-width:760px;margin:auto}header{padding-bottom:18px;border-bottom:1px solid var(--app-line,#e5e7eb)}header small{color:#1677ff;font-weight:700}h1{margin:8px 0 3px;font-size:24px}p{margin:0;color:var(--app-muted,#64748b)}section{padding-top:22px}article{display:grid;grid-template-columns:36px minmax(0,1fr);gap:9px;margin-bottom:20px;line-height:1.7}article b{font-size:11px}.user div{padding:10px 12px;border-radius:8px;background:var(--app-card,#f1f5f9)}article div{min-width:0;overflow-wrap:anywhere}.state{padding:70px 12px;text-align:center;color:#64748b}.error{color:#dc2626}</style>

@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { api, ApiError, ApiNetworkError, type CurrentUser } from './api'
 import { clearUserCache } from './dataCache'
+import { apiUrl } from './runtime'
 
 const USER_SNAPSHOT_KEY = 'expense-app:v1:session-user'
 
@@ -13,7 +14,7 @@ export const session = reactive({
 
 export function cleanOptionalUrl(value: string | null | undefined) {
   const url = typeof value === 'string' ? value.trim() : ''
-  return url && !['undefined', 'null'].includes(url.toLowerCase()) ? url : null
+  return url && !['undefined', 'null'].includes(url.toLowerCase()) ? apiUrl(url) : null
 }
 
 function readUserSnapshot() {

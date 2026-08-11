@@ -109,11 +109,13 @@ def get_settings() -> Settings:
                     "http://localhost:8000",
                     "http://127.0.0.1:5173",
                     "http://localhost:5173",
+                    "capacitor://localhost",
+                    "ionic://localhost",
                 ],
             ),
         ),
         session_cookie_secure=_env_bool("SESSION_COOKIE_SECURE", app_env != "development"),
-        session_cookie_samesite=_env_choice("SESSION_COOKIE_SAMESITE", "strict", {"lax", "strict", "none"}),  # type: ignore[arg-type]
+        session_cookie_samesite=_env_choice("SESSION_COOKIE_SAMESITE", "strict" if app_env == "development" else "none", {"lax", "strict", "none"}),  # type: ignore[arg-type]
         trust_proxy_headers=_env_bool("TRUST_PROXY_HEADERS", False),
         public_registration_enabled=_env_bool("PUBLIC_REGISTRATION_ENABLED", False),
         public_registration_role=_env_choice("PUBLIC_REGISTRATION_ROLE", "editor", {"viewer", "editor"}),  # type: ignore[arg-type]

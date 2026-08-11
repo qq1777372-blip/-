@@ -1798,6 +1798,9 @@ def get_setting(db: Session, key: str) -> AppSetting | None:
 
 
 DEFAULT_SYSTEM_SETTINGS: dict[str, Any] = {
+    "system_name": "内部管理系统",
+    "system_subtitle": "任务记账与店铺后台",
+    "system_logo": "",
     "license_expiry_days": 30,
     "stale_task_days": 3,
     "login_failure_threshold": 3,
@@ -1863,6 +1866,9 @@ def initialize_field_configuration() -> None:
             existing_field = existing_fields_by_name.get(definition["field_name"])
             desired_sort_order = definition["sort_order"]
             if existing_field is not None:
+                if existing_field.is_builtin and existing_field.label != definition["label"]:
+                    existing_field.label = definition["label"]
+                    needs_commit = True
                 if (
                     existing_field.is_builtin
                     and existing_field.sort_order != desired_sort_order
@@ -5441,6 +5447,8 @@ def ensure_sycm_data_db() -> None:
         sync_columns = {row[1] for row in connection.execute("PRAGMA table_info(sycm_sync_requests)")}
         if "results_json" not in sync_columns:
             connection.execute("ALTER TABLE sycm_sync_requests ADD COLUMN results_json TEXT NOT NULL DEFAULT '[]'")
+        if "device_id" not in sync_columns:
+            connection.execute("ALTER TABLE sycm_sync_requests ADD COLUMN device_id TEXT NOT NULL DEFAULT ''")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS sycm_collector_devices (
@@ -5841,6 +5849,23 @@ def serialize_sycm_sync_request(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def expire_stale_sycm_sync_requests(connection: sqlite3.Connection, now_dt: datetime) -> None:
+    pending_before = (now_dt - timedelta(minutes=15)).isoformat()
+    running_before = (now_dt - timedelta(minutes=5)).isoformat()
+    connection.execute(
+        "UPDATE sycm_sync_requests SET status='failed', completed_at=?, "
+        "error='采集端未在15分钟内认领，已自动取消' "
+        "WHERE status='pending' AND requested_at < ?",
+        (now_dt.isoformat(), pending_before),
+    )
+    connection.execute(
+        "UPDATE sycm_sync_requests SET status='failed', completed_at=?, "
+        "error='采集已超时：采集端未确认任务完成，请检查采集器日志后重试' "
+        "WHERE status='running' AND claimed_at < ?",
+        (now_dt.isoformat(), running_before),
+    )
+
+
 @app.post("/api/sycm/sync-requests", status_code=202)
 def create_sycm_sync_request(current_user: AdminUser = Depends(get_current_user)):
     now_dt = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -5848,16 +5873,11 @@ def create_sycm_sync_request(current_user: AdminUser = Depends(get_current_user)
     # A pending request that nobody has claimed for more than 15 minutes means
     # the collector is offline or misconfigured. Returning it forever blocks all
     # future syncs, so expire it and let the user queue a fresh attempt.
-    # Running tasks have their own 15-minute reaper in the claim route; only
-    # stuck *pending* rows need reclaiming here.
-    pending_stale_before = (now_dt - timedelta(minutes=15)).isoformat()
+    # The shared reaper also closes running tasks whose completion callback was
+    # lost, so neither state can block future sync requests indefinitely.
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
-        connection.execute(
-            "UPDATE sycm_sync_requests SET status='failed', error='采集端未在15分钟内认领，已自动取消' "
-            "WHERE status='pending' AND requested_at < ?",
-            (pending_stale_before,),
-        )
+        expire_stale_sycm_sync_requests(connection, now_dt)
         existing = connection.execute(
             "SELECT * FROM sycm_sync_requests WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -5877,6 +5897,8 @@ def create_sycm_sync_request(current_user: AdminUser = Depends(get_current_user)
 def get_latest_sycm_sync_request(_: AdminUser = Depends(get_current_user)):
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
+        expire_stale_sycm_sync_requests(connection, datetime.now(ZoneInfo("Asia/Shanghai")))
+        connection.commit()
         row = connection.execute("SELECT * FROM sycm_sync_requests ORDER BY id DESC LIMIT 1").fetchone()
     return serialize_sycm_sync_request(row) if row is not None else None
 
@@ -5984,7 +6006,6 @@ async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sy
             connection.commit()
         return None
     owner_stale_before = (now_dt - timedelta(minutes=10)).isoformat()
-    stale_before = (now_dt - timedelta(minutes=15)).isoformat()
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("BEGIN IMMEDIATE")
@@ -6030,11 +6051,7 @@ async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sy
                     (device_id, now, now, shop_id),
                 )
                 allowed_shop_ids.append(shop_id)
-        connection.execute(
-            "UPDATE sycm_sync_requests SET status='pending', claimed_at=NULL "
-            "WHERE status='running' AND claimed_at < ?",
-            (stale_before,),
-        )
+        expire_stale_sycm_sync_requests(connection, now_dt)
         row = connection.execute(
             "SELECT * FROM sycm_sync_requests WHERE status='pending' ORDER BY id LIMIT 1"
         ).fetchone()
@@ -6042,8 +6059,8 @@ async def claim_sycm_sync_request(request: Request, _: None = Depends(require_sy
             connection.commit()
             return None
         connection.execute(
-            "UPDATE sycm_sync_requests SET status='running', claimed_at=?, error='' WHERE id=?",
-            (now, row["id"]),
+            "UPDATE sycm_sync_requests SET status='running', claimed_at=?, error='', device_id=? WHERE id=?",
+            (now, device_id, row["id"]),
         )
         connection.commit()
         claimed = connection.execute("SELECT * FROM sycm_sync_requests WHERE id=?", (row["id"],)).fetchone()
@@ -6076,6 +6093,35 @@ async def complete_sycm_sync_request(
     status = "completed" if succeeded else "failed"
     completed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
     with sqlite3.connect(SYCM_DATA_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT status, completed_at, device_id FROM sycm_sync_requests WHERE id=?",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Sync request not found")
+        if row["status"] in {"completed", "failed"}:
+            return {"ok": True, "status": row["status"], "completedAt": row["completed_at"]}
+        reported_shop_ids = {
+            str(item.get("shopId") or "").strip()
+            for item in results
+            if isinstance(item, dict) and str(item.get("shopId") or "").strip()
+        }
+        if row["device_id"]:
+            missing_shops = connection.execute(
+                "SELECT o.shop_id, COALESCE((SELECT s.shop_name FROM sycm_snapshots s "
+                "WHERE s.shop_id=o.shop_id ORDER BY s.collected_at DESC LIMIT 1), o.shop_id) AS shop_name "
+                "FROM sycm_shop_owners o WHERE o.device_id=?",
+                (row["device_id"],),
+            ).fetchall()
+            for missing in missing_shops:
+                if missing["shop_id"] not in reported_shop_ids:
+                    results.append({
+                        "shopId": missing["shop_id"],
+                        "shopName": missing["shop_name"],
+                        "success": False,
+                        "error": "未发现有效千牛会话，Cookie可能已失效，请重新登录千牛",
+                    })
         cursor = connection.execute(
             "UPDATE sycm_sync_requests SET status=?, completed_at=?, error=?, results_json=? "
             "WHERE id=? AND status='running'",
@@ -6963,7 +7009,9 @@ def logout(
     response_model=CurrentUserResponse,
     summary="Get current admin info",
 )
-def auth_me(current_user: AdminUser = Depends(get_current_user)):
+def auth_me(response: Response, current_user: AdminUser = Depends(get_current_user)):
+    response.headers["X-Authenticated-User"] = str(current_user.id)
+    response.headers["X-Authenticated-Role"] = current_user.role
     return serialize_current_user(current_user)
 
 

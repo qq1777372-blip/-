@@ -2,8 +2,8 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/app/favicon.svg" />
-    <link rel="apple-touch-icon" href="/app/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -23,20 +23,20 @@
       @keyframes startup-pulse{0%,80%,100%{opacity:.28;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
       @media(prefers-reduced-motion:reduce){#app-startup{transition:none}.startup-dots i{animation:none;opacity:.65}}
     </style>
-    <title>内部管理 App</title>
+    <title>小许后台管理系统</title>
     <!-- Runtime add-ons served from public/. They patch pages the bundle already
          renders, so they stay outside the Vue build on purpose: license-preview
          drives the fullscreen license image, cache-settings adds the cache
          cleanup row to the settings list. -->
-    <script defer src="/app/cache-settings.js"></script>
-    <script defer src="/app/license-preview.js"></script>
+    <script defer src="./cache-settings.js"></script>
+    <script defer src="./license-preview.js"></script>
   </head>
   <body>
     <div id="app"></div>
     <div id="app-startup" role="status" aria-live="polite" aria-label="应用正在启动">
       <div class="startup-content">
-        <div class="startup-logo" aria-hidden="true">RS</div>
-        <h1 class="startup-title">内部管理 App</h1>
+        <div class="startup-logo" aria-hidden="true">小许</div>
+        <h1 class="startup-title">小许后台管理系统</h1>
         <div class="startup-status"><span>正在启动</span><span class="startup-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
       </div>
     </div>

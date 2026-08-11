@@ -54,6 +54,7 @@ import type {
   TaskBookkeepingSummary,
   TotpSetupResponse,
   SystemAlertList,
+  SystemBranding,
   SystemSettings,
 } from '../types/api'
 
@@ -156,6 +157,11 @@ export async function updateSystemAlertStatus(alertKey: string, acknowledged: bo
 
 export async function fetchSystemSettings() {
   const { data } = await http.get<SystemSettings>('/system-settings')
+  return data
+}
+
+export async function fetchSystemBranding() {
+  const { data } = await http.get<SystemBranding>('/system-branding')
   return data
 }
 

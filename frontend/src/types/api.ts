@@ -114,6 +114,9 @@ export interface SystemAlertList {
 }
 
 export interface SystemSettings {
+  system_name: string
+  system_subtitle: string
+  system_logo: string
   license_expiry_days: number
   stale_task_days: number
   login_failure_threshold: number
@@ -123,6 +126,8 @@ export interface SystemSettings {
   task_alert_enabled: boolean
   security_alert_enabled: boolean
 }
+
+export type SystemBranding = Pick<SystemSettings, 'system_name' | 'system_subtitle' | 'system_logo'>
 
 export interface ServerServiceStatus {
   name: string

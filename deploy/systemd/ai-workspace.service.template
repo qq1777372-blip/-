@@ -1,0 +1,23 @@
+[Unit]
+Description=RuoShop AI Workspace
+After=network.target
+
+[Service]
+Type=simple
+User=fastapiproject
+Group=fastapiproject
+WorkingDirectory=/srv/ai-workspace
+Environment=PYTHONUNBUFFERED=1
+Environment=AI_WORKSPACE_PORT=8766
+Environment=AI_WORKSPACE_REQUIRE_AUTH=true
+ExecStart=/srv/ai-workspace/.venv/bin/python /srv/ai-workspace/server.py
+Restart=always
+RestartSec=3
+UMask=027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/srv/ai-workspace
+
+[Install]
+WantedBy=multi-user.target

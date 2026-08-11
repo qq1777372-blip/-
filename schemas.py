@@ -1080,6 +1080,9 @@ class ExpenseCategoryUpdateRequest(BaseModel):
 
 
 class SystemSettingsResponse(BaseModel):
+    system_name: str = Field(default="内部管理系统", min_length=1, max_length=40)
+    system_subtitle: str = Field(default="任务记账与店铺后台", max_length=60)
+    system_logo: str = Field(default="", max_length=750_000)
     license_expiry_days: int = Field(default=30, ge=1, le=365)
     stale_task_days: int = Field(default=3, ge=1, le=90)
     login_failure_threshold: int = Field(default=3, ge=1, le=20)
@@ -1090,6 +1093,12 @@ class SystemSettingsResponse(BaseModel):
     security_alert_enabled: bool = True
     data_alert_enabled: bool = True
     profit_stale_days: int = Field(default=3, ge=1, le=90)
+
+
+class SystemBrandingResponse(BaseModel):
+    system_name: str
+    system_subtitle: str
+    system_logo: str
 
 
 class SystemAlertItem(BaseModel):

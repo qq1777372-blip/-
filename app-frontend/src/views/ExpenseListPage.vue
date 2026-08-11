@@ -21,7 +21,7 @@ const loading = ref(true)
 const canWrite = computed(() => ['editor', 'superadmin'].includes(session.user?.role || ''))
 
 const filtered = computed(() => records.value.filter((record) => {
-  const text = `${record.expense_no} ${record.category} ${record.payment_account} ${record.description} ${record.expense_scope}`.toLowerCase()
+  const text = `${record.expense_no} ${record.category} ${record.payment_account} ${record.description} ${record.expense_scope} ${record.submitter_name}`.toLowerCase()
   if (query.value && !text.includes(query.value.toLowerCase())) return false
   return !filter.value || record.payment_type === filter.value
 }))
@@ -122,7 +122,7 @@ onMounted(load)
           </div>
         </section>
 
-        <IonSearchbar v-model="query" placeholder="搜索分类、账户或说明" mode="ios" />
+        <IonSearchbar v-model="query" placeholder="搜索分类、账户、说明或记账人" mode="ios" />
         <div class="filters">
           <button :class="{ active: !filter }" @click="filter = ''">全部</button>
           <button :class="{ active: filter === 'company' }" @click="filter = 'company'">公司支付</button>
@@ -138,7 +138,7 @@ onMounted(load)
                   <div class="record-icon">{{ record.category.slice(0, 1) }}</div>
                   <div class="record-body">
                     <h2>{{ record.category }}</h2>
-                    <p>{{ record.payment_account }}<template v-if="record.description"> · {{ record.description }}</template> · 记录 {{ recordTime(record.created_at) }}</p>
+                    <p>{{ record.payment_account }}<template v-if="record.description"> · {{ record.description }}</template> · 记账人：{{ record.submitter_name || '未知' }} · {{ recordTime(record.created_at) }}</p>
                   </div>
                   <div class="record-right">
                     <strong>-{{ amount(record.amount) }}</strong>

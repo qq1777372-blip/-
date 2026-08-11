@@ -213,15 +213,45 @@ const routes = [
         meta: { title: '手机设备', section: '店铺管理', permission: 'mobile_devices' },
       },
       {
-        // 知识问答由独立服务提供（knowledge-base.service，见 deploy/README.md），
-        // 这里只是把它嵌进后台。以前这个入口是 public/knowledge-menu.js 在运行时
-        // 往侧边栏 DOM 里插一个假菜单项，Vue 重渲染菜单时会把它清掉，dev 下基本
-        // 看不到。改成正常路由后由 Vue 自己管理，不再依赖菜单的内部结构。
-        // 没有 knowledge 权限键，因此不加 permission，与原脚本的无条件插入一致。
-        path: 'knowledge',
-        name: 'knowledge',
-        component: () => import('../views/KnowledgeView.vue'),
-        meta: { title: '知识问答', section: '店铺管理' },
+        path: 'ai-workspace/workspace',
+        redirect: '/ai-workspace/models',
+      },
+      {
+        path: 'ai-workspace/resources',
+        name: 'ai-workspace-resources',
+        component: () => import('../views/AiResourcesView.vue'),
+        meta: { title: 'AI 工作空间', section: '工具' },
+      },
+      {
+        path: 'ai-workspace/models',
+        name: 'ai-workspace-models',
+        component: () => import('../views/AiModelsView.vue'),
+        meta: { title: '模型管理', section: '工具' },
+      },
+      {
+        path: 'ai-workspace/knowledge',
+        name: 'ai-workspace-knowledge',
+        component: () => import('../views/AiKnowledgeView.vue'),
+        meta: { title: 'AI 知识库', section: '工具' },
+      },
+      {
+        path: 'ai-workspace/operations',
+        name: 'ai-workspace-operations',
+        component: () => import('../views/AiOperationsView.vue'),
+        meta: { title: 'AI 运行与治理', section: '工具' },
+      },
+      {
+        path: 'ai-workspace',
+        name: 'ai-workspace',
+
+        component: () => import('../views/AiWorkspaceView.vue'),
+        meta: { title: 'AI 工作台', section: '工具' },
+      },
+      {
+        path: 'ai-workspace/shared/:id',
+        name: 'ai-workspace-shared',
+        component: () => import('../views/AiSharedChatView.vue'),
+        meta: { title: '共享会话', section: '工具' },
       },
       {
         path: 'license-keys',

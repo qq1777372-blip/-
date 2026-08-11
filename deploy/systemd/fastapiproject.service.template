@@ -10,7 +10,9 @@ WorkingDirectory=/srv/fastapiproject
 Environment=PYTHONUNBUFFERED=1
 Environment=APP_ENV=production
 Environment=APP_DEBUG=false
-Environment=SESSION_COOKIE_SECURE=false
+Environment=SESSION_COOKIE_SECURE=true
+Environment=SESSION_COOKIE_SAMESITE=none
+Environment=CORS_ALLOWED_ORIGINS=https://xiaoxu666.asia,https://www.xiaoxu666.asia,capacitor://localhost,ionic://localhost
 Environment=TRUST_PROXY_HEADERS=true
 Environment=LICENSE_SERVER_BASE_URL=http://127.0.0.1:15000
 # Server-status fleet. Without SERVER_STATUS_REMOTE_NODES the 服务器运行 page shows

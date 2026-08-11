@@ -41,24 +41,19 @@ const backend = process.env.VITE_DEV_API ?? 'http://127.0.0.1:8000'
 // its own static page at `/` and its API under `/api/`, so both prefixes are
 // rewritten here exactly the way nginx rewrites them in production. Sending
 // these to `backend` instead yields 404s on every knowledge request.
-const knowledgeBackend = process.env.VITE_DEV_KNOWLEDGE ?? 'http://127.0.0.1:8765'
+const aiBackend = process.env.VITE_DEV_AI ?? 'http://127.0.0.1:8766'
 
 const knowledgeProxy = {
-  '^/knowledge-api/': {
-    target: knowledgeBackend,
+  '^/ai-api/': {
+    target: aiBackend,
     changeOrigin: true,
-    rewrite: (path: string) => path.replace(/^\/knowledge-api\//, '/api/'),
-  },
-  '^/knowledge/': {
-    target: knowledgeBackend,
-    changeOrigin: true,
-    rewrite: (path: string) => path.replace(/^\/knowledge\//, '/'),
+    rewrite: (path: string) => path.replace(/^\/ai-api\//, '/api/'),
   },
 }
 
 // https://vite.dev/config/
-export default defineConfig({
-  base: '/app/',
+export default defineConfig(({ mode }) => ({
+  base: mode === 'native' ? './' : '/app/',
   server: {
     port: 5174,
     proxy: {
@@ -73,8 +68,8 @@ export default defineConfig({
       injectRegister: null,
       includeAssets: ['favicon.svg', 'icons.svg'],
       manifest: {
-        name: '内部管理 App',
-        short_name: '内部管理',
+        name: '小许后台管理系统',
+        short_name: '小许后台',
         description: '店铺、任务、记账、库存与利润管理',
         lang: 'zh-CN',
         start_url: '/app/',
@@ -99,4 +94,4 @@ export default defineConfig({
     }),
   ],
   build: { outDir: '../app-frontend-dist', emptyOutDir: true },
-})
+}))

@@ -4,7 +4,6 @@ import {
   Bell,
   Box,
   Cellphone,
-  ChatDotSquare,
   Document,
   Fold,
   House,
@@ -18,11 +17,10 @@ import {
   Tickets,
   TrendCharts,
   User,
-  UserFilled,
 } from '@element-plus/icons-vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchSystemAlerts } from '../api'
+import { fetchSystemAlerts, fetchSystemBranding } from '../api'
 import ChangePasswordDialog from '../components/ChangePasswordDialog.vue'
 import EditProfileDialog from '../components/EditProfileDialog.vue'
 import SessionManageDialog from '../components/SessionManageDialog.vue'
@@ -52,6 +50,8 @@ const alertPreview = ref<SystemAlertItem[]>([])
 const alertPopoverVisible = ref(false)
 const showAllAlerts = ref(false)
 const alertUpdatedAt = ref('')
+const branding = ref({ system_name: '内部管理系统', system_subtitle: '任务记账与店铺后台', system_logo: '' })
+const brandInitials = computed(() => branding.value.system_name.trim().slice(0, 2).toUpperCase() || 'RS')
 
 interface AlertGroup {
   category: SystemAlertItem['category']
@@ -113,11 +113,11 @@ const defaultOpeneds = computed(() => {
     return ['warehouse']
   }
 
-  if (['/audit-logs', '/system-settings'].includes(path)) {
+  if (['/server-status', '/admin-permissions', '/audit-logs', '/system-settings'].includes(path)) {
     return ['system-management']
   }
 
-  if (['/sycm', '/shop-records', '/peer-shops', '/licenses', '/account-usage', '/mobile-devices', '/knowledge'].includes(path)) {
+  if (['/sycm', '/shop-records', '/peer-shops', '/licenses', '/account-usage', '/mobile-devices'].includes(path)) {
     return ['store']
   }
 
@@ -217,6 +217,9 @@ async function loadWebVersion() {
 
 onMounted(refreshAlertCount)
 onMounted(loadWebVersion)
+onMounted(async () => {
+  try { branding.value = await fetchSystemBranding() } catch { /* keep defaults */ }
+})
 
 watch(alertPopoverVisible, (visible) => {
   if (!visible) showAllAlerts.value = false
@@ -281,10 +284,10 @@ async function handleUserCommand(command: string | number | object) {
       :width="desktopAsideWidth"
     >
       <div class="layout-brand">
-        <div class="brand-logo">RS</div>
+        <div class="brand-logo"><img v-if="branding.system_logo" :src="branding.system_logo" alt="系统 Logo" /><span v-else>{{ brandInitials }}</span></div>
         <div class="layout-brand-copy">
-          <strong>内部管理系统</strong>
-          <span>任务记账与店铺后台</span>
+          <strong>{{ branding.system_name }}</strong>
+          <span>{{ branding.system_subtitle }}</span>
         </div>
       </div>
 
@@ -303,16 +306,6 @@ async function handleUserCommand(command: string | number | object) {
         <el-menu-item index="/dashboard">
           <el-icon><House /></el-icon>
           <span>运营工作台</span>
-        </el-menu-item>
-
-        <el-menu-item v-if="canManageAdmins" index="/server-status">
-          <el-icon><Monitor /></el-icon>
-          <span>服务器运行</span>
-        </el-menu-item>
-
-        <el-menu-item v-if="canManageAdmins" index="/admin-permissions">
-          <el-icon><UserFilled /></el-icon>
-          <span>账号与权限</span>
         </el-menu-item>
 
         <el-menu-item v-if="authStore.canAccess('links')" index="/links">
@@ -387,11 +380,12 @@ async function handleUserCommand(command: string | number | object) {
             <el-icon><Cellphone /></el-icon>
             <span>手机设备</span>
           </el-menu-item>
-          <el-menu-item index="/knowledge">
-            <el-icon><ChatDotSquare /></el-icon>
-            <span>知识库</span>
-          </el-menu-item>
         </el-sub-menu>
+
+        <el-menu-item index="/ai-workspace">
+          <el-icon><Monitor /></el-icon>
+          <span>AI 工作台</span>
+        </el-menu-item>
 
         <el-sub-menu v-if="authStore.canAccess('warehouse')" index="warehouse">
           <template #title><el-icon><Box /></el-icon><span>仓储管理</span></template>
@@ -404,6 +398,12 @@ async function handleUserCommand(command: string | number | object) {
 
         <el-sub-menu v-if="canManageAdmins" index="system-management">
           <template #title><el-icon><Setting /></el-icon><span>系统管理</span></template>
+          <el-menu-item index="/server-status">
+            <span>服务器运行</span>
+          </el-menu-item>
+          <el-menu-item index="/admin-permissions">
+            <span>账号与权限</span>
+          </el-menu-item>
           <el-menu-item index="/audit-logs">安全日志</el-menu-item>
           <el-menu-item index="/system-settings">系统设置</el-menu-item>
         </el-sub-menu>
@@ -614,10 +614,10 @@ async function handleUserCommand(command: string | number | object) {
   >
     <div class="layout-aside mobile-aside">
       <div class="layout-brand">
-        <div class="brand-logo">RS</div>
+        <div class="brand-logo"><img v-if="branding.system_logo" :src="branding.system_logo" alt="系统 Logo" /><span v-else>{{ brandInitials }}</span></div>
         <div>
-          <strong>内部管理系统</strong>
-          <span>任务记账与店铺后台</span>
+          <strong>{{ branding.system_name }}</strong>
+          <span>{{ branding.system_subtitle }}</span>
         </div>
       </div>
 
@@ -635,16 +635,6 @@ async function handleUserCommand(command: string | number | object) {
         <el-menu-item index="/dashboard">
           <el-icon><House /></el-icon>
           <span>运营工作台</span>
-        </el-menu-item>
-
-        <el-menu-item v-if="canManageAdmins" index="/server-status">
-          <el-icon><Monitor /></el-icon>
-          <span>服务器运行</span>
-        </el-menu-item>
-
-        <el-menu-item v-if="canManageAdmins" index="/admin-permissions">
-          <el-icon><UserFilled /></el-icon>
-          <span>账号与权限</span>
         </el-menu-item>
 
         <el-menu-item v-if="authStore.canAccess('links')" index="/links">
@@ -719,11 +709,12 @@ async function handleUserCommand(command: string | number | object) {
             <el-icon><Cellphone /></el-icon>
             <span>手机设备</span>
           </el-menu-item>
-          <el-menu-item index="/knowledge">
-            <el-icon><ChatDotSquare /></el-icon>
-            <span>知识库</span>
-          </el-menu-item>
         </el-sub-menu>
+
+        <el-menu-item index="/ai-workspace">
+          <el-icon><Monitor /></el-icon>
+          <span>AI 工作台</span>
+        </el-menu-item>
 
         <el-sub-menu v-if="authStore.canAccess('warehouse')" index="warehouse">
           <template #title><el-icon><Box /></el-icon><span>仓储管理</span></template>
@@ -736,6 +727,12 @@ async function handleUserCommand(command: string | number | object) {
 
         <el-sub-menu v-if="canManageAdmins" index="system-management">
           <template #title><el-icon><Setting /></el-icon><span>系统管理</span></template>
+          <el-menu-item index="/server-status">
+            <span>服务器运行</span>
+          </el-menu-item>
+          <el-menu-item index="/admin-permissions">
+            <span>账号与权限</span>
+          </el-menu-item>
           <el-menu-item index="/audit-logs">安全日志</el-menu-item>
           <el-menu-item index="/system-settings">系统设置</el-menu-item>
         </el-sub-menu>
@@ -750,8 +747,17 @@ async function handleUserCommand(command: string | number | object) {
 </template>
 
 <style scoped>
+.app-shell {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .layout-content-shell {
+  height: 100%;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .layout-aside {
@@ -794,6 +800,18 @@ async function handleUserCommand(command: string | number | object) {
   background: #6366f1;
   color: #ffffff;
   font-weight: 800;
+  overflow: hidden;
+  flex: none;
+}
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.brand-logo span {
+  margin: 0;
+  color: #fff;
+  font-size: 12px;
 }
 
 .layout-brand strong {
@@ -1279,7 +1297,17 @@ async function handleUserCommand(command: string | number | object) {
 }
 
 .layout-main {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   padding: 20px 24px 24px;
+}
+
+.layout-main:has(.ai-shell) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 @keyframes sidebar-enter {
