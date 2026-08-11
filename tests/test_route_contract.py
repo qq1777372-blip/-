@@ -61,7 +61,7 @@ class RouteContractTests(unittest.TestCase):
         self.assertEqual(duplicates, [], f"routes registered more than once: {duplicates}")
 
     def test_routes_match_the_snapshot(self) -> None:
-        """Pins all 212 URLs so a refactor cannot silently change the API surface.
+        """Pins the complete URL set so a refactor cannot silently change the API surface.
 
         The frontends hardcode these paths and each dev server proxies them by
         prefix, so a moved route breaks a page with a 404 that only shows up

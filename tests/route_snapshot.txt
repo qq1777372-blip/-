@@ -103,6 +103,7 @@ GET /software/publish-failures
 GET /software/rules/catalog
 GET /software/rules/category
 GET /system-alerts
+GET /system-branding
 GET /system-settings
 GET /task-bookkeeping/owners
 GET /task-bookkeeping/records
