@@ -3,13 +3,13 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import MarkdownIt from "markdown-it";
 import {
-  IonButton, IonContent, IonFooter, IonIcon, IonPage, IonSpinner, IonTextarea,
+  IonContent, IonFooter, IonIcon, IonPage, IonSpinner, IonTextarea,
   onIonViewDidEnter, toastController,
 } from "@ionic/vue";
 import {
-  addOutline, arrowUpOutline, attachOutline, chatbubblesOutline, copyOutline,
+  addOutline, arrowUpOutline, attachOutline, chatbubblesOutline, checkmarkOutline, copyOutline,
   createOutline, documentOutline, downloadOutline, gitBranchOutline, globeOutline,
-  imageOutline, libraryOutline, micOutline, optionsOutline, refreshOutline,
+  imageOutline, libraryOutline, menuOutline, micOutline, optionsOutline, refreshOutline,
   shareSocialOutline, sparklesOutline, starOutline, stopOutline, trashOutline,
   volumeHighOutline,
 } from "ionicons/icons";
@@ -358,23 +358,16 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
   <IonPage class="ai-page">
     <PageHeader title="AI 工作台" subtitle="智能助理" back />
 
-    <nav class="ai-switch">
-      <button :class="{ on: tab === 'chat' }" @click="tab = 'chat'">对话</button>
-      <button :class="{ on: tab === 'history' }" @click="tab = 'history'">
-        记录<small v-if="chats.length">{{ chats.length }}</small>
-      </button>
-      <button class="new-chat-btn" aria-label="新对话" @click="createChat">
-        <IonIcon :icon="addOutline" />
-      </button>
+    <nav class="chat-toolbar">
+      <button aria-label="打开对话记录" @click="drawerOpen = true"><IonIcon :icon="menuOutline" /><small v-if="chats.length">{{ chats.length }}</small></button>
+      <strong>{{ activeChat?.title || '新对话' }}</strong>
+      <button aria-label="新对话" @click="createChat"><IonIcon :icon="addOutline" /></button>
     </nav>
 
-    <!-- ── History tab ── -->
-    <IonContent v-if="tab === 'history'">
-      <main class="page-pad">
-        <div class="section-title">
-          <h2>历史对话</h2>
-          <button class="link-action" @click="createChat"><IonIcon :icon="addOutline" />新对话</button>
-        </div>
+    <div v-if="drawerOpen" class="history-mask" @click.self="drawerOpen = false">
+      <aside class="history-drawer">
+        <header><div><strong>对话记录</strong><small>{{ chats.length }} 个会话</small></div><button aria-label="新对话" @click="createChat"><IonIcon :icon="addOutline" /></button></header>
+        <label class="history-search"><IonIcon :icon="chatbubblesOutline" /><input v-model="chatSearch" placeholder="搜索对话记录" /></label>
         <div class="chat-filter">
           <button :class="{ on: !showArchived }" @click="showArchived = false">最近</button>
           <button :class="{ on: showArchived }" @click="showArchived = true">已归档</button>
@@ -395,7 +388,7 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 
         <!-- current chat actions -->
         <div v-if="activeChat" class="chat-ops">
-          <div class="section-title" style="margin-top:22px"><h2>当前对话操作</h2></div>
+          <h2>当前对话</h2>
           <div class="ops-grid">
             <button @click="toggleFavorite"><IonIcon :icon="starOutline" />{{ activeChat.favorite ? '取消收藏' : '收藏' }}</button>
             <button @click="renameChat"><IonIcon :icon="createOutline" />重命名</button>
@@ -407,11 +400,10 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
           </div>
         </div>
         <input ref="chatImportInput" class="hidden-input" type="file" accept="application/json,.json" @change="importChats" />
-      </main>
-    </IonContent>
+      </aside>
+    </div>
 
-    <!-- ── Chat tab ── -->
-    <IonContent v-else ref="contentRef">
+    <IonContent ref="contentRef">
       <main class="page-pad chat-pad">
 
         <!-- ── 欢迎页：全屏居中，无卡片容器 ── -->
@@ -449,19 +441,14 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
                 <button @click="saveAsNote(msg)"><IonIcon :icon="documentOutline" />Notes</button>
                 <button @click="regenerate(msg)"><IonIcon :icon="refreshOutline" />重生成</button>
                 <button @click="speak(msg)"><IonIcon :icon="volumeHighOutline" />朗读</button>
-                <button @click="exportAnswer(msg, 'docx')">Word</button>
-                <button @click="exportAnswer(msg, 'xlsx')">Excel</button>
-                <button @click="exportAnswer(msg, 'pdf')">PDF</button>
                 <button @click="branchFrom(msg)"><IonIcon :icon="gitBranchOutline" />分支</button>
+                <details class="export-menu"><summary>导出</summary><div><button @click="exportAnswer(msg, 'docx')">Word</button><button @click="exportAnswer(msg, 'xlsx')">Excel</button><button @click="exportAnswer(msg, 'pdf')">PDF</button></div></details>
               </div>
             </div>
             <div v-else class="user-bubble">
               <p>{{ msg.content }}</p>
-              <div class="turn-actions user-actions">
-                <button @click="editMessage(msg)"><IonIcon :icon="createOutline" />编辑</button>
-                <button @click="branchFrom(msg)"><IonIcon :icon="gitBranchOutline" />分支</button>
-              </div>
             </div>
+            <div v-if="msg.role === 'user'" class="turn-actions user-actions"><button @click="editMessage(msg)"><IonIcon :icon="createOutline" />编辑</button><button @click="branchFrom(msg)"><IonIcon :icon="gitBranchOutline" />分支</button></div>
           </div>
         </div>
 
@@ -498,21 +485,22 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
           </button>
         </div>
       </div>
-      <div class="composer-row">
-        <button class="plus-btn" :class="{ on: toolsOpen }" aria-label="工具" @click="toolsOpen = !toolsOpen">
-          <IonIcon :icon="addOutline" />
-        </button>
+      <div class="composer-box">
         <IonTextarea v-model="prompt" :auto-grow="true" :rows="1" :maxlength="2000" enterkeyhint="send"
           :placeholder="recording ? '正在录音…' : imageMode ? '描述要生成的图片' : '给 AI 发消息…'"
           @keydown.enter.exact.prevent="send()" />
-        <IonButton v-if="sending" color="medium" aria-label="停止" @click="stopGeneration"><IonIcon :icon="stopOutline" /></IonButton>
-        <IonButton v-else :disabled="!prompt.trim()" aria-label="发送" @click="send()"><IonIcon :icon="arrowUpOutline" /></IonButton>
-      </div>
-      <div class="composer-meta">
-        <button class="model-chip" @click="optionsOpen = true">{{ currentModelName }}</button>
-        <span v-if="useKnowledge" class="meta-badge">知识库</span>
-        <span v-if="useWebSearch" class="meta-badge">联网</span>
-        <span v-if="imageMode" class="meta-badge">生图</span>
+        <div class="composer-controls">
+          <div class="composer-left">
+            <button class="plus-btn" :class="{ on: toolsOpen }" aria-label="工具" @click="toolsOpen = !toolsOpen"><IonIcon :icon="addOutline" /></button>
+            <button class="model-chip" @click="optionsOpen = true">{{ currentModelName }}</button>
+            <span v-if="useKnowledge" class="meta-badge">知识库</span>
+            <span v-if="useWebSearch" class="meta-badge">联网</span>
+            <span v-if="imageMode" class="meta-badge">生图</span>
+          </div>
+          <button v-if="sending" class="voice-send is-stop" aria-label="停止生成" @click="stopGeneration"><IonIcon :icon="stopOutline" /><span>停止</span></button>
+          <button v-else-if="prompt.trim()" class="voice-send is-send" aria-label="发送" @click="send()"><IonIcon :icon="arrowUpOutline" /><span>发送</span></button>
+          <button v-else class="voice-send" :class="{ recording }" @click="toggleRecording"><IonIcon :icon="recording ? stopOutline : micOutline" /><span>{{ recording ? '结束录音' : '开始说话' }}</span></button>
+        </div>
       </div>
       <input ref="fileInput" class="hidden-input" type="file" multiple accept=".pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.webp" @change="importFiles" />
     </IonFooter>
@@ -527,29 +515,18 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
           <button @click="optionsOpen = false; router.push('/tabs/module/ai-operations')">运行与治理</button>
           <button @click="optionsOpen = false; router.push('/tabs/module/ai-capabilities')">能力库</button>
         </div>
-        <label>模型
-          <select v-model="selectedModelId">
-            <option value="">基础模型</option>
-            <option v-for="item in models.filter(m => m.model_type !== 'audio')" :key="item.id" :value="item.id">{{ item.name }}</option>
-          </select>
-        </label>
-        <label v-if="audioModels.length">语音模型
-          <select v-model="selectedAudioModelId">
-            <option v-for="item in audioModels" :key="item.id" :value="item.id">{{ item.name }}</option>
-          </select>
-        </label>
-        <label v-if="audioModels.length">音色
-          <select v-model="voice">
-            <option value="alloy">Alloy</option><option value="echo">Echo</option>
-            <option value="nova">Nova</option><option value="shimmer">Shimmer</option>
-          </select>
-        </label>
-        <label v-if="useKnowledge">知识集合
-          <select v-model="selectedKnowledgeId">
-            <option value="">全部知识</option>
-            <option v-for="item in knowledge" :key="item.id" :value="item.id">{{ item.name }}</option>
-          </select>
-        </label>
+        <section class="model-picker"><b>选择模型</b><div class="model-options">
+          <button :class="{ on: !selectedModelId }" @click="selectedModelId = ''"><span>基础模型</span><IonIcon v-if="!selectedModelId" :icon="checkmarkOutline" /></button>
+          <button v-for="item in models.filter(m => m.model_type !== 'audio')" :key="item.id" :class="{ on: selectedModelId === item.id }" @click="selectedModelId = item.id"><span>{{ item.name }}</span><IonIcon v-if="selectedModelId === item.id" :icon="checkmarkOutline" /></button>
+        </div></section>
+        <section v-if="audioModels.length" class="model-picker"><b>语音模型</b><div class="model-options compact">
+          <button v-for="item in audioModels" :key="item.id" :class="{ on: selectedAudioModelId === item.id }" @click="selectedAudioModelId = item.id"><span>{{ item.name }}</span><IonIcon v-if="selectedAudioModelId === item.id" :icon="checkmarkOutline" /></button>
+        </div></section>
+        <section v-if="audioModels.length" class="voice-picker"><b>音色</b><div><button v-for="item in ['alloy','echo','nova','shimmer']" :key="item" :class="{ on: voice === item }" @click="voice = item">{{ item }}</button></div></section>
+        <section v-if="useKnowledge" class="model-picker"><b>知识集合</b><div class="model-options compact">
+          <button :class="{ on: !selectedKnowledgeId }" @click="selectedKnowledgeId = ''"><span>全部知识</span><IonIcon v-if="!selectedKnowledgeId" :icon="checkmarkOutline" /></button>
+          <button v-for="item in knowledge" :key="item.id" :class="{ on: selectedKnowledgeId === item.id }" @click="selectedKnowledgeId = item.id"><span>{{ item.name }}</span><IonIcon v-if="selectedKnowledgeId === item.id" :icon="checkmarkOutline" /></button>
+        </div></section>
         <section v-if="skills.length"><b>Skills</b>
           <label v-for="item in skills" :key="item.id"><input v-model="selectedSkillIds" type="checkbox" :value="item.id" />{{ item.name }}</label>
         </section>
@@ -581,12 +558,20 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 <style scoped>
 .hidden-input { display: none; }
 
-/* ── Tab switch ── */
-.ai-switch { display: grid; grid-template-columns: 1fr 1fr 40px; padding: 8px 14px 0; background: var(--ion-background-color); gap: 0; }
-.ai-switch button { height: 36px; border: 0; border-bottom: 2px solid transparent; color: var(--app-muted); background: transparent; font-size: 14px; font-weight: 600; }
-.ai-switch button.on { color: var(--app-blue); border-bottom-color: var(--app-blue); }
-.ai-switch small { margin-left: 4px; padding: 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--app-blue) 14%, transparent); font-size: 10px; }
-.new-chat-btn { width: 36px; height: 36px; display: grid; place-items: center; border: 0 !important; border-bottom: none !important; color: var(--app-blue) !important; font-size: 22px; }
+.chat-toolbar{height:44px;padding:0 10px;display:grid;grid-template-columns:40px minmax(0,1fr) 40px;align-items:center;border-bottom:1px solid var(--app-line);background:var(--app-card)}
+.chat-toolbar>button{position:relative;width:36px;height:36px;padding:0;border:0;display:grid;place-items:center;color:var(--app-text);background:transparent;font-size:21px}
+.chat-toolbar>button:last-child{color:var(--app-blue)}
+.chat-toolbar>button small{position:absolute;top:1px;right:0;min-width:15px;height:15px;padding:0 3px;border-radius:999px;display:grid;place-items:center;color:#fff;background:var(--app-blue);font-size:8px}
+.chat-toolbar>strong{overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}
+.history-mask{position:fixed;z-index:1100;inset:0;background:rgba(15,23,42,.4)}
+.history-drawer{width:min(86vw,340px);height:100%;padding:calc(12px + env(safe-area-inset-top)) 12px calc(16px + env(safe-area-inset-bottom));overflow-y:auto;background:var(--ion-background-color);box-shadow:10px 0 35px rgba(15,23,42,.18);animation:drawer-in .22s ease-out both}
+.history-drawer>header{height:48px;display:flex;align-items:center;justify-content:space-between}
+.history-drawer>header strong,.history-drawer>header small{display:block}.history-drawer>header strong{font-size:17px}.history-drawer>header small{margin-top:2px;color:var(--app-muted);font-size:10px}
+.history-drawer>header button{width:36px;height:36px;padding:0;border:0;border-radius:9px;display:grid;place-items:center;color:var(--app-blue);background:var(--app-card);font-size:21px}
+.history-search{height:40px;margin:8px 0 12px;padding:0 11px;border:1px solid var(--app-line);border-radius:10px;display:flex;align-items:center;gap:8px;color:var(--app-muted);background:var(--app-card)}
+.history-search input{min-width:0;flex:1;border:0;outline:0;color:var(--app-text);background:transparent;font-size:13px}
+.history-search ion-icon{font-size:16px}.history-drawer .compact-list{max-height:46vh;overflow-y:auto}.history-drawer .chat-ops h2{margin:18px 2px 8px;font-size:13px}
+@keyframes drawer-in{from{transform:translateX(-100%)}to{transform:none}}
 
 /* ── Chat area ── */
 .chat-pad { width: min(100%, 720px); margin: 0 auto; padding-bottom: 20px; }
@@ -655,16 +640,15 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 
 /* ── Composer: clean single row + expandable tools ── */
 .ai-composer { padding: 8px 12px calc(7px + env(safe-area-inset-bottom)); border-top: 1px solid var(--app-line); background: color-mix(in srgb, var(--app-card) 97%, transparent); box-shadow: 0 -5px 22px rgba(15,23,42,.05); backdrop-filter: blur(20px); }
-.composer-row { display: grid; grid-template-columns: 36px minmax(0,1fr) 40px; gap: 8px; align-items: end; }
-.plus-btn { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--app-line); border-radius: 12px; color: var(--app-muted); background: transparent; font-size: 22px; transition: transform .15s; }
+.composer-box{padding:6px 8px 7px;border:1px solid var(--app-line);border-radius:18px;background:var(--ion-background-color);box-shadow:0 4px 18px rgba(15,23,42,.06)}
+.composer-box ion-textarea{min-height:38px;max-height:120px;overflow:auto;--padding-start:4px;--padding-end:4px;--padding-top:7px;--padding-bottom:5px;--background:transparent;font-size:16px}
+.composer-controls{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:7px}
+.composer-left{min-width:0;display:flex;align-items:center;gap:5px;overflow-x:auto;scrollbar-width:none}.composer-left::-webkit-scrollbar{display:none}
+.plus-btn { flex:none;width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--app-line);border-radius:50%;color:var(--app-text);background:var(--app-card);font-size:20px;transition:transform .15s; }
 .plus-btn.on { transform: rotate(45deg); color: var(--app-blue); border-color: var(--app-blue); }
-.composer-row ion-textarea { min-height: 36px; max-height: 120px; overflow: auto; border: 1px solid var(--app-line); border-radius: 14px; --padding-start: 12px; --padding-end: 12px; --padding-top: 8px; --padding-bottom: 8px; --background: var(--ion-background-color); font-size: 16px; }
-.composer-row ion-button { width: 40px; height: 40px; margin: 0; --border-radius: 13px; }
-
-.composer-meta { display: flex; align-items: center; gap: 6px; margin-top: 5px; overflow-x: auto; scrollbar-width: none; }
-.composer-meta::-webkit-scrollbar { display: none; }
-.model-chip { flex-shrink: 0; height: 22px; padding: 0 9px; border: 0; border-radius: 999px; color: var(--app-muted); background: var(--ion-background-color); font-size: 10px; }
+.model-chip { flex-shrink: 0;max-width:100px;height:28px;padding:0 9px;overflow:hidden;border:0;border-radius:999px;text-overflow:ellipsis;white-space:nowrap;color:var(--app-text);background:var(--app-card);font-size:10px;font-weight:600; }
 .meta-badge { flex-shrink: 0; height: 20px; padding: 0 8px; border-radius: 999px; color: var(--app-blue); background: color-mix(in srgb, var(--app-blue) 12%, transparent); font-size: 10px; line-height: 20px; }
+.voice-send{flex:none;height:32px;padding:0 12px;border:0;border-radius:999px;display:flex;align-items:center;gap:5px;color:#fff;background:var(--app-blue);box-shadow:0 3px 10px color-mix(in srgb,var(--app-blue) 28%,transparent);font-size:11px;font-weight:600}.voice-send ion-icon{font-size:15px}.voice-send.recording,.voice-send.is-stop{background:#ef4444;box-shadow:none}.voice-send.is-send{width:34px;padding:0;justify-content:center;background:var(--app-blue)}.voice-send.is-send span{display:none}
 
 /* ── Tools panel (expands above composer-row) ── */
 .tools-panel { padding-bottom: 9px; border-bottom: 1px solid var(--app-line); margin-bottom: 8px; }
@@ -692,6 +676,8 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 .bottom-sheet section b { display: block; margin-bottom: 8px; color: var(--app-muted); font-size: 11px; }
 .bottom-sheet section label { display: flex; align-items: center; gap: 8px; min-height: 34px; font-size: 13px; color: var(--app-text); }
 .bottom-sheet section input[type="checkbox"] { width: 17px; height: 17px; }
+.bottom-sheet .model-picker{padding:10px 8px 8px}.bottom-sheet .model-picker>b{padding:2px 5px 8px;font-size:12px}.model-options{max-height:240px;overflow-y:auto;border-radius:9px;background:var(--ion-background-color)}.model-options button{width:100%;min-height:42px;padding:8px 11px;border:0;border-bottom:1px solid var(--app-line);display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;color:var(--app-text);background:transparent;font-size:13px}.model-options button:last-child{border-bottom:0}.model-options button span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.model-options button ion-icon{flex:none;color:var(--app-blue);font-size:18px}.model-options button.on{color:var(--app-blue);background:color-mix(in srgb,var(--app-blue) 9%,var(--app-card));font-weight:600}
+.model-options.compact{max-height:168px}.bottom-sheet .voice-picker{padding:10px}.voice-picker>div{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}.voice-picker>div button{height:32px;padding:0 4px;border:1px solid var(--app-line);border-radius:8px;color:var(--app-muted);background:var(--ion-background-color);font-size:10px;text-transform:capitalize}.voice-picker>div button.on{border-color:var(--app-blue);color:#fff;background:var(--app-blue)}
 .sheet-links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 6px; }
 .sheet-links button { min-height: 42px; border: 0; border-radius: 12px; color: var(--app-blue); background: var(--app-card); font-size: 13px; }
 
@@ -708,6 +694,28 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 .ion-palette-dark .welcome-orb { box-shadow: 0 10px 30px rgba(25,145,255,.15); }
 .ion-palette-dark .welcome-chips button, .ion-palette-dark .ai-composer { box-shadow: none; }
 .ion-palette-dark .ai-card { background: var(--app-card); box-shadow: none; }
+
+/* Mobile chat message layout. Kept after the legacy rules to resolve their duplicate selectors. */
+.chat-pad{padding-right:12px;padding-left:12px}
+.turn{margin:18px 0!important}
+.turn-body{max-width:100%}
+.assistant .turn-body{width:100%}
+.ai-card{padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+.user .turn-body{max-width:82%!important;padding:0!important;border-radius:0!important;color:inherit!important;background:transparent!important}
+.user-bubble{width:max-content;max-width:100%!important;margin-left:auto;padding:9px 13px!important;border-radius:14px 14px 4px 14px!important;background:var(--app-blue)!important;color:#fff!important}
+.user-bubble p{font-size:14px;line-height:1.55!important}
+.turn-actions{gap:2px 14px!important;margin-top:9px!important;padding-top:8px!important}
+.assistant .turn-actions{border-top:1px solid var(--app-line)!important}
+.user-actions{justify-content:flex-end;margin-top:5px!important;padding-top:0!important;border-top:0!important}
+.user-actions button{color:var(--app-muted)!important}
+.turn-actions button{min-height:28px;padding:4px 0!important;font-size:11px!important}
+.export-menu{position:relative;color:var(--app-muted);font-size:11px}
+.export-menu summary{min-height:28px;display:flex;align-items:center;cursor:pointer;list-style:none}
+.export-menu summary::-webkit-details-marker{display:none}
+.export-menu[open] summary{color:var(--app-blue)}
+.export-menu div{position:absolute;z-index:4;right:0;bottom:32px;min-width:92px;padding:5px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-card);box-shadow:0 8px 24px #0f172a1a}
+.export-menu div button{width:100%;padding:7px 9px!important;border-radius:5px;text-align:left}
+.export-menu div button:active{background:var(--app-soft)}
 
 /* ── Chat area ── */
 .chat-pad { width: min(100%, 720px); margin: 0 auto; padding-bottom: 20px; }

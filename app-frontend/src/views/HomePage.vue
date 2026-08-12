@@ -168,7 +168,14 @@ onUnmounted(() => document.removeEventListener('visibilitychange', refreshWhenVi
 
         <div class="home-heading"><h2>经营数据</h2><button v-if="failed && network.online" class="sync-error" @click="loadSummary"><IonIcon :icon="refreshOutline" />同步失败，重试</button><span v-else>{{ syncStatus }}</span></div>
         <section class="business-board">
-          <div class="business-grid"><div><small>公司消费</small><b>{{ money(expenses?.month_total) }}</b></div><div><small>累计利润</small><b>{{ money(profits?.total_profit) }}</b></div><div><small>当月钉钉利润</small><b>{{ money(currentMonthProfit) }}</b></div><div><small>待签收</small><b>{{ count(tasks?.pending_signed_count) }}</b></div><div><small>库存数量</small><b>{{ count(warehouse?.total_quantity) }}</b></div><div><small>库存成本</small><b>{{ money(warehouse?.total_cost) }}</b></div></div>
+          <div class="business-grid">
+            <div><b>{{ money(expenses?.month_total) }}</b><small>公司消费</small></div>
+            <div><b>{{ money(profits?.total_profit) }}</b><small>累计利润</small></div>
+            <div><b>{{ money(currentMonthProfit) }}</b><small>当月钉钉利润</small></div>
+            <div><b>{{ count(tasks?.pending_signed_count) }}</b><small>待签收</small></div>
+            <div><b>{{ count(warehouse?.total_quantity) }}</b><small>库存数量</small></div>
+            <div><b>{{ money(warehouse?.total_cost) }}</b><small>库存成本</small></div>
+          </div>
           <button class="trend-head" @click="router.push('/tabs/list/profits')"><span>钉钉月度利润</span><em>查看趋势 ›</em></button>
           <div v-if="chartMonths.length" class="mini-chart"><div v-for="item in chartMonths" :key="item.month"><span :style="{ height: `${Math.max(Math.abs(item.total_profit) / maxProfit * 58, 5)}px` }" :class="{ negative: item.total_profit < 0 }"></span><small>{{ item.month.slice(5) }}月</small></div></div><div v-else class="chart-empty">{{ loading ? '正在加载趋势…' : failed ? '趋势数据暂不可用' : '暂无趋势数据' }}</div>
         </section>
@@ -190,4 +197,8 @@ onUnmounted(() => document.removeEventListener('visibilitychange', refreshWhenVi
 .home-functions{gap:18px 7px;padding:16px 8px 15px}.home-functions span,.home-function-picker span{width:49px;height:49px;border-radius:13px}.home-functions ion-icon,.home-function-picker ion-icon{font-size:25px}.home-functions b,.home-function-picker b{margin-top:7px;font-weight:600}
 .business-grid div{min-height:70px}.business-grid b{font-size:18px;font-weight:700;letter-spacing:0}
 .home-todos button{min-height:62px;grid-template-columns:9px 1fr auto;gap:11px;padding:11px 13px}.home-todos strong{min-width:28px;text-align:right;font-size:19px;font-weight:700}
+.business-grid div{position:relative;min-width:0;min-height:76px;padding:0 7px;text-align:center}
+.business-grid small,.business-grid b{display:block}
+.business-grid b{position:absolute;top:50%;left:7px;right:7px;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px;line-height:1.35;transform:translateY(-50%)}
+.business-grid small{position:absolute;right:7px;bottom:8px;left:7px;margin:0;color:var(--app-muted);font-size:10px;line-height:1.2;white-space:nowrap}
 </style>

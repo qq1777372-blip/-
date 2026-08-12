@@ -1,29 +1,34 @@
 ﻿<script setup lang="ts">
-import { IonContent, IonIcon, IonPage, alertController } from '@ionic/vue'
+import { IonContent, IonIcon, IonPage, alertController, onIonViewWillLeave } from '@ionic/vue'
 import { chevronForwardOutline, cloudDownloadOutline, logOutOutline, refreshCircleOutline } from 'ionicons/icons'
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { logout } from '../session'
 import { APP_VERSION } from '../version'
 const router=useRouter()
+onIonViewWillLeave(()=>{ void alertController.dismiss().catch(()=>undefined) })
 const checkUpdate=async()=>{const alert=await alertController.create({header:'检查更新',message:`当前版本 ${APP_VERSION}，已是最新版本。`,buttons:['知道了']});await alert.present()}
 const clearAppCache=async()=>{
   const alert=await alertController.create({
     header:'清理软件缓存',
     message:'将清除旧版界面文件并重新加载，不会删除登录状态和业务数据。',
-    buttons:['取消',{text:'清理并重载',handler:async()=>{
-      if('serviceWorker' in navigator){
-        const registrations=await navigator.serviceWorker.getRegistrations()
-        await Promise.all(registrations.filter(item=>item.scope.includes('/app/')).map(item=>item.unregister()))
-      }
-      if('caches' in window){
-        const names=await caches.keys()
-        await Promise.all(names.map(name=>caches.delete(name)))
-      }
-      location.replace(`/app/?cache-cleared=${Date.now()}`)
-    }}],
+    buttons:[
+      {text:'取消',role:'cancel'},
+      {text:'清理并重新加载',role:'confirm'},
+    ],
   })
   await alert.present()
+  const result=await alert.onDidDismiss()
+  if(result.role!=='confirm')return
+  if('serviceWorker' in navigator){
+    const registrations=await navigator.serviceWorker.getRegistrations()
+    await Promise.all(registrations.filter(item=>item.scope.includes('/app/')).map(item=>item.unregister()))
+  }
+  if('caches' in window){
+    const names=await caches.keys()
+    await Promise.all(names.map(name=>caches.delete(name)))
+  }
+  location.replace(`/app/?cache-cleared=${Date.now()}`)
 }
 const signOut=async()=>{await logout();router.replace('/login')}
 </script>
