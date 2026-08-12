@@ -13,9 +13,10 @@ import App from './App.vue'
 import { markUpdateReady, watchConnectivity } from './network'
 import router from './router'
 import './theme.css'
-import { installNativeFetchBridge, isNativeApp } from './runtime'
+import { installNativeAssetBridge, installNativeFetchBridge, isNativeApp } from './runtime'
 
 installNativeFetchBridge()
+installNativeAssetBridge()
 document.documentElement.classList.toggle('ion-palette-dark', localStorage.getItem('app-theme') === 'dark')
 watchConnectivity()
 let updateSW = async (_reloadPage?: boolean) => {}

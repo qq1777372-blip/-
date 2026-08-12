@@ -8,7 +8,7 @@ import { api, ApiError } from '../api'
 import { copyText } from '../clipboard'
 
 type Row = Record<string, unknown>
-const route = useRoute(); const row = ref<Row>({}); const loading = ref(true)
+const route = useRoute(); const row = ref<Row>({}); const loading = ref(true); const customLabels = ref<Record<string,string>>({})
 const resource = computed(() => String(route.params.resource)); const id = computed(() => String(route.params.id))
 const configs: Record<string, { title: string; endpoint: string; titleKeys: string[] }> = {
   links: { title: '链接详情', endpoint: '/saved-links', titleKeys: ['title'] }, peers: { title: '同行店铺详情', endpoint: '/peer-shops', titleKeys: ['shop_name'] },
@@ -27,9 +27,23 @@ const hidden = new Set(['password','password_hash','image_path','avatar_path','i
 const imageUrl = computed(() => { const value = row.value.image_url; return typeof value === 'string' && value ? `${value}${value.indexOf('?') >= 0 ? '&' : '?'}thumb=1` : '' })
 const imageName = computed(() => String(row.value.image_name || '证照图片'))
 const imageBroken = ref(false)
-const fields = computed(() => Object.entries(row.value).filter(([key,value]) => !hidden.has(key) && value !== null && value !== '' && typeof value !== 'object').map(([key,value]) => [labels[key] || key, typeof value === 'boolean' ? (value ? '是' : '否') : String(value)]))
+const fields = computed(() => {
+  const extra = row.value.extra_fields && typeof row.value.extra_fields === 'object' ? row.value.extra_fields as Row : {}
+  return Object.entries({ ...row.value, ...extra })
+    .filter(([key,value]) => key !== 'extra_fields' && !hidden.has(key) && value !== null && value !== '' && typeof value !== 'object')
+    .map(([key,value]) => [labels[key] || customLabels.value[key] || key, typeof value === 'boolean' ? (value ? '是' : '否') : String(value)])
+})
 const headline = computed(() => config.value.titleKeys.map((key) => row.value[key]).find(Boolean) || `记录 #${id.value}`)
-async function load() { try { const result = await api<Row[] | { items?: Row[] }>(config.value.endpoint); const items = Array.isArray(result) ? result : result.items || []; row.value = items.find((item) => String(item.id??item.license_key??item.key??item.username) === id.value) || {} } catch(error) { const toast=await toastController.create({message:error instanceof ApiError?error.detail:'详情加载失败',duration:2200,color:'danger'});await toast.present() } finally { loading.value=false } }
+async function load() { try {
+  const settingKeys:Record<string,string>={peers:'peer-shop-columns',licenses:'license-columns',devices:'mobile-device-columns','account-usage':'account-usage-columns'}
+  const settingKey=settingKeys[resource.value]
+  const [result,setting]=await Promise.all([
+    api<Row[] | { items?: Row[] }>(config.value.endpoint),
+    settingKey?api<{value?:Array<{key:string;label:string}>}>(`/ui-settings/${settingKey}`).catch(()=>({value:[]})):Promise.resolve({value:[]}),
+  ])
+  customLabels.value=Object.fromEntries((setting.value||[]).map(field=>[field.key,field.label]))
+  const items = Array.isArray(result) ? result : result.items || []; row.value = items.find((item) => String(item.id??item.license_key??item.key??item.username) === id.value) || {}
+} catch(error) { const toast=await toastController.create({message:error instanceof ApiError?error.detail:'详情加载失败',duration:2200,color:'danger'});await toast.present() } finally { loading.value=false } }
 async function copyField(label:unknown,value:unknown){const text=String(value||'');if(!text||text==='—')return;const copied=await copyText(text);const toast=await toastController.create({message:copied?`已复制：${String(label)}`:'复制失败，请长按文字复制',duration:1500,color:copied?'success':'warning'});await toast.present()}
 onMounted(load)
 </script>
