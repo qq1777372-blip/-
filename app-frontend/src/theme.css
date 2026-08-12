@@ -4,7 +4,7 @@ ion-modal.fullscreen-safe-modal{--padding-top:env(safe-area-inset-top,0px);--pad
 .login-page{width:100%;min-width:0;overflow-x:hidden}.login-page>*{min-width:0}.login-card,.login-card ion-item,.login-card ion-input,.captcha-row>*{min-width:0;max-width:100%}
 .sync-error{color:#dc2626!important}.chart-empty{height:92px;display:grid;place-items:center;color:var(--app-muted);font-size:11px}
 .ion-palette-dark{--ion-background-color:#0d1626;--ion-text-color:#edf3ff;--app-card:#121d30;--app-line:#29374e;--app-muted:#91a0b8;--app-text:#f3f6fc;--app-blue:#4aa8ff}
-html,body,#app,ion-app{height:100%}*,*::before,*::after{box-sizing:border-box}body{margin:0;color:var(--app-text);background:var(--ion-background-color);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;-webkit-font-smoothing:antialiased}button,input,textarea,select{font-family:inherit}button{touch-action:manipulation}ion-content{--background:var(--ion-background-color)}
+html,body,#app,ion-app{height:100%}*,*::before,*::after{box-sizing:border-box}body{margin:0;color:var(--app-text);background:var(--ion-background-color);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;-webkit-font-smoothing:antialiased;overflow-x:auto}button,input,textarea,select{font-family:inherit}button{touch-action:manipulation}ion-content{--background:var(--ion-background-color);--overflow:auto}ion-content::part(scroll){overflow-x:auto;overscroll-behavior-x:auto;touch-action:pan-x pan-y pinch-zoom}
 /* Ionic keeps prior routes mounted. Fully remove hidden pages from painting so
    WebView/compositor layers cannot leak rows from a cached page after tab switches. */
 ion-router-outlet > .ion-page-hidden{display:none!important}

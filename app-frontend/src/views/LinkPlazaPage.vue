@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import { IonContent, IonIcon, IonPage, IonRefresher, IonRefresherContent, actionSheetController, alertController, toastController, onIonViewWillEnter } from '@ionic/vue'
+import { IonContent, IonIcon, IonInfiniteScroll, IonInfiniteScrollContent, IonPage, IonRefresher, IonRefresherContent, actionSheetController, alertController, toastController, onIonViewWillEnter } from '@ionic/vue'
 import { addCircleOutline, chatbubbleEllipsesOutline, documentTextOutline, imageOutline, searchOutline } from 'ionicons/icons'
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
@@ -35,6 +35,9 @@ const records=ref<SavedLink[]>([])
 const query=ref('')
 const tab=ref<Tab>('latest')
 const loading=ref(true)
+const loadingMore=ref(false)
+const hasMore=ref(true)
+const pageSize=15
 const actionId=ref<number|null>(null)
 const feedScroll=ref<HTMLElement|null>(null)
 const tabs=computed(()=>[
@@ -53,7 +56,7 @@ const categoryCount=computed(()=>new Set(filtered.value.map(item=>category(item)
 
 async function load(event?:{target:{complete:()=>void}}){
   loading.value=true
-  try{records.value=await api('/saved-links')}
+  try{const rows=await api<SavedLink[]>(`/saved-links?offset=0&limit=${pageSize}`);records.value=rows;hasMore.value=rows.length===pageSize}
   catch(error){
     const toast=await toastController.create({message:error instanceof ApiError?error.detail:'链接广场加载失败',duration:2200,color:'danger'})
     await toast.present()
@@ -61,6 +64,15 @@ async function load(event?:{target:{complete:()=>void}}){
     loading.value=false
     event?.target.complete()
   }
+}
+async function loadMore(event:{target:{complete:()=>void}}){
+  if(loadingMore.value||!hasMore.value){event.target.complete();return}
+  loadingMore.value=true
+  try{
+    const rows=await api<SavedLink[]>(`/saved-links?offset=${records.value.length}&limit=${pageSize}`)
+    records.value.push(...rows.filter(row=>!records.value.some(item=>item.id===row.id)))
+    hasMore.value=rows.length===pageSize
+  }finally{loadingMore.value=false;event.target.complete()}
 }
 function canEdit(item:SavedLink){return session.user?.role==='superadmin'||item.author_user_id===session.user?.id}
 function replaceRecord(updated:SavedLink){records.value=records.value.map(item=>item.id===updated.id?updated:item)}
@@ -200,7 +212,7 @@ onIonViewWillEnter(load)
                   </button>
                   <div v-if="item.images?.length" class="saved-link-gallery" :class="galleryClass(item)">
                     <button v-for="(image,index) in item.images.slice(0,3)" :key="image.storage_name" class="saved-link-gallery__item" @click="router.push(`/tabs/detail/links/${item.id}`)">
-                      <img :src="image.url" :alt="`${item.title}配图${index+1}`">
+                      <img :src="`${image.url}${image.url.includes('?')?'&':'?'}thumb=1`" :alt="`${item.title}配图${index+1}`" loading="lazy" decoding="async">
                       <span v-if="index===2&&item.images.length>3" class="saved-link-gallery__more">+{{ item.images.length-3 }}</span>
                     </button>
                   </div>
@@ -221,6 +233,9 @@ onIonViewWillEnter(load)
                   <strong>暂无符合条件的帖子</strong>
                   <span>换个关键词或发布第一篇帖子</span>
                 </div>
+                <IonInfiniteScroll :disabled="!hasMore" threshold="180px" @ion-infinite="loadMore">
+                  <IonInfiniteScrollContent loading-spinner="crescent" loading-text="正在加载更多" />
+                </IonInfiniteScroll>
               </section>
             </div>
           </div>

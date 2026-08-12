@@ -26,7 +26,7 @@ import pyotp
 import qrcode
 from cryptography.fernet import Fernet, InvalidToken
 
-from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile, status
+from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -1149,11 +1149,16 @@ def set_saved_link_push_state(
     record.push_error = str(error_text or "").strip() or None
 
 
-def serialize_saved_link(record: SavedLink, db: Session | None = None) -> dict[str, Any]:
+def serialize_saved_link(
+    record: SavedLink,
+    db: Session | None = None,
+    author_user: AdminUser | None = None,
+) -> dict[str, Any]:
     images = get_saved_link_images(record)
     primary_image = images[0] if images else None
     primary_url = resolve_saved_link_primary_url(record.url, record.description) or None
-    author_user = db.get(AdminUser, record.author_user_id) if db is not None else None
+    if author_user is None and db is not None:
+        author_user = db.get(AdminUser, record.author_user_id)
     return {
         "id": record.id,
         "title": record.title,
@@ -8069,6 +8074,8 @@ def create_saved_link(
     summary="List all saved links",
 )
 def list_saved_links(
+    offset: int = Query(default=0, ge=0),
+    limit: int | None = Query(default=None, ge=1, le=50),
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("viewer")),
 ):
@@ -8078,7 +8085,17 @@ def list_saved_links(
         SavedLink.updated_at.desc(),
         SavedLink.id.desc(),
     )
-    return [serialize_saved_link(record, db) for record in db.scalars(stmt).all()]
+    if offset:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    records = db.scalars(stmt).all()
+    author_ids = {record.author_user_id for record in records}
+    authors = {
+        user.id: user
+        for user in db.scalars(select(AdminUser).where(AdminUser.id.in_(author_ids))).all()
+    } if author_ids else {}
+    return [serialize_saved_link(record, author_user=authors.get(record.author_user_id)) for record in records]
 
 
 @app.put(
@@ -8269,6 +8286,7 @@ def push_saved_link(
 def get_saved_link_image_file(
     link_id: int,
     image_name: str,
+    thumb: int = 0,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("viewer")),
 ):
@@ -8290,12 +8308,10 @@ def get_saved_link_image_file(
     if not image_file.is_file():
         raise HTTPException(status_code=404, detail="Saved-link image not found")
 
-    media_type, _ = mimetypes.guess_type(image_file.name)
-    return FileResponse(
+    return image_file_response(
         image_file,
-        media_type=media_type or "application/octet-stream",
-        filename=str(image_entry.get("name") or image_file.name),
-        content_disposition_type="inline",
+        str(image_entry.get("name") or image_file.name),
+        thumbnail=bool(thumb),
     )
 
 

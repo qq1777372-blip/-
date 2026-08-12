@@ -2,6 +2,7 @@ const nativeProtocols = new Set(['capacitor:', 'ionic:'])
 
 export const isNativeApp = import.meta.env.MODE === 'native' || (typeof window !== 'undefined' && nativeProtocols.has(window.location.protocol))
 export const apiOrigin = String(import.meta.env.VITE_NATIVE_API_ORIGIN || 'https://xiaoxu666.asia').replace(/\/$/, '')
+export const nativeImageCacheName = 'ruoshop-native-images-v1'
 
 export function apiUrl(path: string) {
   if (!isNativeApp || !path.startsWith('/')) return path
@@ -16,7 +17,45 @@ export function assetUrl(value: unknown) {
 export function installNativeAssetBridge() {
   if (!isNativeApp) return
   const objectUrls = new WeakMap<HTMLImageElement, string>()
+  const memoryUrls = new Map<string, string>()
+  const pending = new Map<string, Promise<string>>()
   const loading = new WeakSet<HTMLImageElement>()
+  const maxMemoryImages = 100
+  const evictMemoryImage = () => {
+    while (memoryUrls.size > maxMemoryImages) {
+      const oldest = memoryUrls.keys().next().value as string | undefined
+      if (!oldest) return
+      const objectUrl = memoryUrls.get(oldest)
+      memoryUrls.delete(oldest)
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }
+  const cachedObjectUrl = async (remote: string) => {
+    const memoryUrl = memoryUrls.get(remote)
+    if (memoryUrl) {
+      // Refresh insertion order so the map acts as a small LRU cache.
+      memoryUrls.delete(remote)
+      memoryUrls.set(remote, memoryUrl)
+      return memoryUrl
+    }
+    const existing = pending.get(remote)
+    if (existing) return existing
+    const request = (async () => {
+      const cache = 'caches' in window ? await caches.open(nativeImageCacheName) : null
+      let response = await cache?.match(remote)
+      if (!response) {
+        response = await fetch(remote, { credentials: 'include' })
+        if (!response.ok) throw new Error(`Image request failed: ${response.status}`)
+        await cache?.put(remote, response.clone())
+      }
+      const objectUrl = URL.createObjectURL(await response.blob())
+      memoryUrls.set(remote, objectUrl)
+      evictMemoryImage()
+      return objectUrl
+    })().finally(() => pending.delete(remote))
+    pending.set(remote, request)
+    return request
+  }
   const loadImage = async (image: HTMLImageElement) => {
     const source = image.getAttribute('src')?.trim() || ''
     if (!source || source.startsWith('blob:') || source.startsWith('data:') || loading.has(image)) return
@@ -24,11 +63,9 @@ export function installNativeAssetBridge() {
     if (!remote.startsWith(apiOrigin)) return
     loading.add(image)
     try {
-      const response = await fetch(remote, { credentials: 'include' })
-      if (!response.ok) return
-      const objectUrl = URL.createObjectURL(await response.blob())
+      const objectUrl = await cachedObjectUrl(remote)
       const previous = objectUrls.get(image)
-      if (previous) URL.revokeObjectURL(previous)
+      if (previous && !memoryUrls.has(remote)) URL.revokeObjectURL(previous)
       objectUrls.set(image, objectUrl)
       image.src = objectUrl
     } catch {
@@ -37,9 +74,25 @@ export function installNativeAssetBridge() {
       loading.delete(image)
     }
   }
+  const observer = 'IntersectionObserver' in window
+    ? new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const image = entry.target as HTMLImageElement
+            observer?.unobserve(image)
+            void loadImage(image)
+          }
+        })
+      }, { rootMargin: '240px' })
+    : null
+  const watch = (image: HTMLImageElement) => {
+    if (image.src.startsWith('blob:') || image.src.startsWith('data:')) return
+    if (observer) observer.observe(image)
+    else void loadImage(image)
+  }
   const scan = (root: ParentNode) => {
-    if (root instanceof HTMLImageElement) void loadImage(root)
-    root.querySelectorAll?.('img[src]').forEach((node) => void loadImage(node as HTMLImageElement))
+    if (root instanceof HTMLImageElement) watch(root)
+    root.querySelectorAll?.('img[src]').forEach((node) => watch(node as HTMLImageElement))
   }
   new MutationObserver((mutations) => {
     for (const mutation of mutations) {

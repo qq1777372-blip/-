@@ -76,6 +76,9 @@ const previewImage = computed(
   () => previewImages.value[previewIndex.value] || null,
 );
 const previewZoom = ref(1);
+const pan = ref({ x: 0, y: 0 });
+const dragging = ref(false);
+const dragStart = ref({ x: 0, y: 0, panX: 0, panY: 0 });
 
 function openImage(url?: string) {
   if (!url) return;
@@ -84,16 +87,19 @@ function openImage(url?: string) {
   );
   previewIndex.value = index < 0 ? 0 : index;
   previewZoom.value = 1;
+  pan.value = { x: 0, y: 0 };
 }
 function closeImage() {
   previewIndex.value = -1;
   previewZoom.value = 1;
+  pan.value = { x: 0, y: 0 };
 }
 function moveImage(step: number) {
   const total = previewImages.value.length;
   if (total > 1) {
     previewIndex.value = (previewIndex.value + step + total) % total;
     previewZoom.value = 1;
+    pan.value = { x: 0, y: 0 };
   }
 }
 function changeZoom(step: number) {
@@ -101,9 +107,27 @@ function changeZoom(step: number) {
     3,
     Math.max(1, Number((previewZoom.value + step).toFixed(1))),
   );
+  if (previewZoom.value === 1) pan.value = { x: 0, y: 0 };
 }
 function toggleZoom() {
   previewZoom.value = previewZoom.value === 1 ? 2 : 1;
+  if (previewZoom.value === 1) pan.value = { x: 0, y: 0 };
+}
+function startPan(event: PointerEvent) {
+  if (previewZoom.value <= 1 || event.pointerType === 'mouse' && event.button !== 0) return;
+  dragging.value = true;
+  dragStart.value = { x: event.clientX, y: event.clientY, panX: pan.value.x, panY: pan.value.y };
+  (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+}
+function movePan(event: PointerEvent) {
+  if (!dragging.value) return;
+  pan.value = {
+    x: dragStart.value.panX + event.clientX - dragStart.value.x,
+    y: dragStart.value.panY + event.clientY - dragStart.value.y,
+  };
+}
+function endPan() {
+  dragging.value = false;
 }
 
 async function load() {
@@ -254,7 +278,7 @@ onMounted(load);
                   aria-label="查看大图"
                   @click="openImage(block.src)"
                 >
-                  <img :src="block.src" :alt="block.alt" />
+                  <img :src="block.src" :alt="block.alt" loading="lazy" decoding="async" />
                 </button>
               </figure>
             </template>
@@ -274,7 +298,7 @@ onMounted(load);
               aria-label="查看大图"
               @click="openImage(image.url)"
             >
-              <img :src="image.url" :alt="image.name || item.title" />
+              <img :src="image.url" :alt="image.name || item.title" loading="lazy" decoding="async" />
             </button>
           </section>
 
@@ -329,7 +353,13 @@ onMounted(load);
           v-if="previewImage"
           :src="previewImage.url"
           :alt="previewImage.alt"
-          :style="{ transform: 'scale(' + previewZoom + ')' }"
+          :style="previewZoom > 1 ? { width: `${previewZoom * 100}%`, maxWidth: 'none', maxHeight: 'none', transform: `translate(${pan.x}px, ${pan.y}px)` } : { transform: 'none' }"
+          :class="{ dragging }"
+          @pointerdown="startPan"
+          @pointermove="movePan"
+          @pointerup="endPan"
+          @pointercancel="endPan"
+          @pointerleave="endPan"
           @dblclick="toggleZoom"
         />
         <button
@@ -382,8 +412,9 @@ onMounted(load);
   width: 30px;
   height: 30px;
   flex: none;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   border-radius: 50%;
   color: #fff;
@@ -542,19 +573,31 @@ onMounted(load);
   position: relative;
   width: 100%;
   height: 100%;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: auto;
   padding: 56px 52px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   background: #050505;
+  touch-action: none;
 }
 .link-image-preview > img {
   display: block;
-  max-width: 100%;
-  max-height: 100%;
+  width: auto;
+  max-width: min(100%, 1200px);
+  max-height: calc(100vh - 112px);
+  flex: 0 0 auto;
   object-fit: contain;
   transition: transform 0.2s ease;
   cursor: zoom-in;
+  user-select: none;
+  touch-action: none;
+}
+.link-image-preview > img.dragging {
+  cursor: grabbing;
+  transition: none;
 }
 .link-image-preview > img:active {
   cursor: grabbing;
@@ -567,8 +610,9 @@ onMounted(load);
   padding: 0;
   border: 0;
   border-radius: 50%;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #fff;
   background: #1f1f1fcc;
 }

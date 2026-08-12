@@ -182,7 +182,7 @@ onMounted(load)
         <section class="wh-list">
           <article v-for="(row, index) in rows" :key="String(row.id || index)" class="wh-card" :class="{ 'is-low': tab === 'stocks' && row.is_low_stock }">
             <div class="wh-top">
-              <span class="wh-thumb"><img v-if="row.image_url" :src="row.image_url" alt="" /><template v-else>{{ title(row).slice(0, 1) }}</template></span>
+              <span class="wh-thumb"><img v-if="row.image_url" :src="`${row.image_url}${String(row.image_url).includes('?') ? '&' : '?'}thumb=1`" alt="" loading="lazy" decoding="async" /><template v-else>{{ title(row).slice(0, 1) }}</template></span>
               <div class="wh-body">
                 <h2>{{ title(row) }}</h2>
                 <p class="wh-meta">{{ subtitle(row) }}</p>

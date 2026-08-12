@@ -41,12 +41,18 @@ const configuredCategories = ref([...fallbackCategories])
 const categories = computed(() => choicesWithLegacy(configuredCategories.value, editing.value ? form.category : null))
 const categoryStatus = ref('')
 const legacyCategory = computed(() => editing.value && isLegacyCategory(configuredCategories.value, form.category))
+// Calculator input stays local; the server is contacted only on final save.
+const amountValue = computed(() => {
+  const value = Number(form.amount)
+  return Number.isFinite(value) ? value : 0
+})
 
 function defaultCategory() {
   return configuredCategories.value[0] || fallbackCategories[0]
 }
 
 function digit(value: string) {
+  if (!/^[0-9.]$/.test(value)) return
   if (value === '.' && form.amount.includes('.')) return
   if (form.amount.includes('.') && form.amount.split('.')[1].length >= 2) return
   if (form.amount.replace('.', '').length >= 9) return
@@ -111,9 +117,24 @@ async function loadCategories() {
 }
 
 async function enterPage() {
-  loading.value = true
-  await Promise.all([loadCategories(), load()])
-  loading.value = false
+  // The quick-entry ledger should be usable immediately from the cached/default
+  // categories. A slow category request must not leave the whole keypad blocked.
+  loading.value = editing.value
+  if (!editing.value) {
+    const cached = cachedExpenseCategories(session.user?.id)
+    if (cached) configuredCategories.value = cached.config.categories
+  }
+  const categoryTask = loadCategories()
+  const recordTask = editing.value ? load() : Promise.resolve()
+  if (editing.value) {
+    await Promise.allSettled([categoryTask, recordTask])
+    loading.value = false
+  } else {
+    // New records do not need any remote data to render. Keep syncing categories
+    // in the background so a delayed API cannot block entering an expense.
+    loading.value = false
+    void categoryTask.catch(() => undefined)
+  }
 }
 
 async function save() {
@@ -124,7 +145,7 @@ async function save() {
   try {
     const payload = {
       expense_date: form.date,
-      amount: Number(form.amount),
+      amount: amountValue.value,
       category: form.category,
       payment_type: form.payment_type,
       payment_account: form.payment_account.trim() || '公司卡',

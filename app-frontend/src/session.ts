@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import { api, ApiError, ApiNetworkError, type CurrentUser } from './api'
 import { clearUserCache } from './dataCache'
-import { apiUrl } from './runtime'
+import { apiUrl, nativeImageCacheName } from './runtime'
 
 const USER_SNAPSHOT_KEY = 'expense-app:v1:session-user'
 
@@ -86,6 +86,7 @@ export async function logout() {
   try {
     await fetch('/auth/logout', { method: 'POST', credentials: 'include' })
   } finally {
+    if ('caches' in window) await caches.delete(nativeImageCacheName)
     clearUserCache(userId)
     writeUserSnapshot(null)
     session.user = null

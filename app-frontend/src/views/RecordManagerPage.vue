@@ -457,7 +457,7 @@ onMounted(load);
               aria-label="查看大图"
               @click="previewImage = detail.image_url"
             >
-              <img :src="detail.image_url" alt="资料图片" />
+              <img :src="`${detail.image_url}${String(detail.image_url).includes('?') ? '&' : '?'}thumb=1`" alt="资料图片" loading="lazy" decoding="async" />
             </button>
             <div class="image-actions">
               <IonButton fill="clear" @click="previewImage = detail.image_url"
