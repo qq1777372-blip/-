@@ -29,3 +29,14 @@ button:active,.compact-row:active,.module-item:active,.record-item:active{transf
 ion-router-outlet .route-page-enter{animation:route-page-enter .3s cubic-bezier(.22,.72,.25,1) both}
 @keyframes route-page-enter{from{opacity:.72;transform:translate3d(0,10px,0)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+
+/* Mobile enterprise UI refresh: quiet surfaces, stronger hierarchy, compact iOS chrome. */
+:root{--ion-color-primary:#1677ff;--ion-background-color:#f5f7fa;--app-soft:#f7f8fa;--app-line:#e9edf2;--app-muted:#7e8999;--app-text:#171f2d;--app-blue:#1677ff;--app-radius:12px;--app-shadow:0 1px 3px rgba(15,23,42,.035)}
+.ion-palette-dark{--ion-background-color:#0d1522;--app-card:#141e2d;--app-soft:#101a29;--app-line:#283548;--app-blue:#4a9eff}
+.app-header ion-toolbar{--min-height:56px;--background:color-mix(in srgb,var(--app-card) 97%,transparent);backdrop-filter:blur(18px)}
+.app-header ion-title{font-size:19px;letter-spacing:0}.app-header.is-subpage ion-title{font-size:17px}.app-header ion-title strong{font-weight:700}.app-header ion-button{--border-radius:9px}
+.app-tabbar{box-sizing:content-box;height:54px;padding:2px 4px env(safe-area-inset-bottom);box-shadow:0 -3px 14px rgba(15,23,42,.045);backdrop-filter:blur(18px)}
+.app-tabbar ion-tab-button{min-height:54px;--color-selected:#1677ff;font-weight:500}.app-tabbar ion-icon{margin-bottom:2px}
+.page-pad{padding-bottom:calc(76px + env(safe-area-inset-bottom))}.section-title{margin-top:20px}.section-title h2{font-weight:700;letter-spacing:0}
+.panel,.compact-list,.metric-strip{border:1px solid color-mix(in srgb,var(--app-line) 75%,transparent);border-radius:var(--app-radius);box-shadow:var(--app-shadow)}
+.module-icon{width:48px;height:48px;margin-bottom:7px;border-radius:13px}.module-icon ion-icon{font-size:25px}

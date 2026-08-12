@@ -486,13 +486,13 @@ onMounted(load);
       ><button
         :class="{ active: workspaceSection === 'core' && tab === 'connections' }"
         @click="selectCoreTab('connections')"
-      >
-        连接 <b>{{ connections.length }}</b></button
       ><button :class="{ active: workspaceSection === 'prompts' }" @click="workspaceSection = 'prompts'">Prompts</button
       ><button :class="{ active: workspaceSection === 'skills' }" @click="workspaceSection = 'skills'">Skills</button
       ><button :class="{ active: workspaceSection === 'tools' }" @click="workspaceSection = 'tools'">Tools</button
       ><button :class="{ active: workspaceSection === 'notes' }" @click="workspaceSection = 'notes'">Notes</button
       ><button :class="{ active: workspaceSection === 'shares' }" @click="workspaceSection = 'shares'">分享管理</button>
+        连接 <b>{{ connections.length }}</b></button
+      >
     </div>
     <template v-if="workspaceSection === 'core' && tab === 'models'"
       ><div class="toolbar">

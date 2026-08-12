@@ -66,6 +66,7 @@ export default defineConfig(({ mode }) => ({
     VitePWA({
       registerType: 'prompt',
       injectRegister: null,
+      devOptions: { enabled: false },
       includeAssets: ['favicon.svg', 'icons.svg'],
       manifest: {
         name: '小许后台管理系统',

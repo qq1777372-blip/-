@@ -2711,6 +2711,9 @@ onMounted(async () => {
   text-align: left !important;
   white-space: nowrap;
 }
+:global(.workspace-model-popper .model-option i) {
+  margin-left: 0 !important;
+}
 .model-option {
   display: flex;
   align-items: center;

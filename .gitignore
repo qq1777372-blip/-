@@ -48,4 +48,5 @@ _*dev*.log
 # grown to 110MB untracked), and `*.db` misses timestamped backup copies whose
 # name does not end in .db.
 _local_*.log
+.local-logs/
 *.db.bak-*
