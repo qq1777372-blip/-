@@ -28,20 +28,6 @@ if (!isNativeApp) {
 }
 const appNavigationAnimation:AnimationBuilder=(baseEl,opts)=>iosTransitionAnimation(baseEl,opts).duration(320)
 
-// Tab roots are kept alive by Ionic and therefore skip the normal outlet
-// transition. Replay a small entrance motion on the page that became active.
-router.afterEach(() => {
-  requestAnimationFrame(() => {
-    const pages = document.querySelectorAll<HTMLElement>('ion-router-outlet .ion-page:not(.ion-page-hidden)')
-    const page = pages[pages.length - 1]
-    if (!page || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    page.classList.remove('route-page-enter')
-    void page.offsetWidth
-    page.classList.add('route-page-enter')
-    window.setTimeout(() => page.classList.remove('route-page-enter'), 360)
-  })
-})
-
 function nextFrame(){return new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))}
 // The startup layer sits in index.html so it paints before any JS runs. It is
 // removed here rather than by a Vue transition, because it has to outlive the

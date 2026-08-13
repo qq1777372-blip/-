@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { IonContent, IonIcon, IonInfiniteScroll, IonInfiniteScrollContent, IonPage, IonRefresher, IonRefresherContent, actionSheetController, alertController, toastController, onIonViewWillEnter } from '@ionic/vue'
 import { addCircleOutline, chatbubbleEllipsesOutline, documentTextOutline, imageOutline, searchOutline } from 'ionicons/icons'
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { api, ApiError } from '../api'
 import { plainText } from '../markdown'
+import { isNativeApp } from '../runtime'
 import { session } from '../session'
 
 export type SavedLink = {
@@ -39,6 +40,9 @@ const loadingMore=ref(false)
 const hasMore=ref(true)
 const pageSize=15
 const actionId=ref<number|null>(null)
+const avatarFailures=ref(new Set<number>())
+const nativeAvatarUrls=ref(new Map<number,string>())
+const nativeAvatarRequests=new Set<number>()
 const feedScroll=ref<HTMLElement|null>(null)
 const tabs=computed(()=>[
   {key:'latest' as Tab,label:'最新',count:records.value.length},
@@ -56,7 +60,7 @@ const categoryCount=computed(()=>new Set(filtered.value.map(item=>category(item)
 
 async function load(event?:{target:{complete:()=>void}}){
   loading.value=true
-  try{const rows=await api<SavedLink[]>(`/saved-links?offset=0&limit=${pageSize}`);records.value=rows;hasMore.value=rows.length===pageSize}
+  try{const rows=await api<SavedLink[]>(`/saved-links?offset=0&limit=${pageSize}`);records.value=rows;hasMore.value=rows.length===pageSize;void loadNativeAvatars(rows)}
   catch(error){
     const toast=await toastController.create({message:error instanceof ApiError?error.detail:'链接广场加载失败',duration:2200,color:'danger'})
     await toast.present()
@@ -72,7 +76,15 @@ async function loadMore(event:{target:{complete:()=>void}}){
     const rows=await api<SavedLink[]>(`/saved-links?offset=${records.value.length}&limit=${pageSize}`)
     records.value.push(...rows.filter(row=>!records.value.some(item=>item.id===row.id)))
     hasMore.value=rows.length===pageSize
+    void loadNativeAvatars(rows)
   }finally{loadingMore.value=false;event.target.complete()}
+}
+function onFeedScroll(){
+  const element = feedScroll.value
+  if (!element || loadingMore.value || !hasMore.value) return
+  if (element.scrollHeight - element.scrollTop - element.clientHeight < 240) {
+    void loadMore({ target: { complete: () => undefined } })
+  }
 }
 function canEdit(item:SavedLink){return session.user?.role==='superadmin'||item.author_user_id===session.user?.id}
 function replaceRecord(updated:SavedLink){records.value=records.value.map(item=>item.id===updated.id?updated:item)}
@@ -145,6 +157,35 @@ function pushClass(item:SavedLink){return item.push_status?`saved-link-post__bad
 function galleryClass(item:SavedLink){return item.images.length===1?'saved-link-gallery--single':item.images.length===2?'saved-link-gallery--double':''}
 function descriptionHasUrl(value?:string){urlPattern.lastIndex=0;return urlPattern.test(value||'')}
 function selectTab(key:Tab){tab.value=key;query.value='';nextTick(()=>feedScroll.value?.scrollTo({top:0,behavior:'auto'}))}
+function avatarSource(item:SavedLink){
+  return isNativeApp?nativeAvatarUrls.value.get(item.author_user_id)||'':item.author_avatar_url||''
+}
+async function loadNativeAvatars(items:SavedLink[]){
+  if(!isNativeApp)return
+  const authors=new Map(items.filter(item=>item.author_avatar_url).map(item=>[item.author_user_id,item.author_avatar_url as string]))
+  await Promise.all([...authors].map(async([userId,url])=>{
+    if(nativeAvatarUrls.value.has(userId)||nativeAvatarRequests.has(userId))return
+    nativeAvatarRequests.add(userId)
+    try{
+      const response=await fetch(url,{credentials:'include'})
+      if(!response.ok)throw new Error(`Avatar request failed: ${response.status}`)
+      const objectUrl=URL.createObjectURL(await response.blob())
+      nativeAvatarUrls.value=new Map(nativeAvatarUrls.value).set(userId,objectUrl)
+    }catch{
+      avatarFailures.value=new Set(avatarFailures.value).add(userId)
+    }finally{
+      nativeAvatarRequests.delete(userId)
+    }
+  }))
+}
+function avatarFailed(item:SavedLink){
+  avatarFailures.value=new Set(avatarFailures.value).add(item.author_user_id)
+}
+onBeforeUnmount(()=>{
+  for(const url of nativeAvatarUrls.value.values()){
+    URL.revokeObjectURL(url)
+  }
+})
 // Ionic keeps tab pages mounted in its navigation stack. Refresh whenever this
 // page becomes active so newly published or edited posts appear after Back.
 onIonViewWillEnter(load)
@@ -178,13 +219,13 @@ onIonViewWillEnter(load)
             </div>
           </div>
 
-          <div class="saved-link-feed-shell">
-            <div ref="feedScroll" class="saved-link-feed-scroll">
+          <div ref="feedScroll" class="saved-link-feed-shell" @scroll.passive="onFeedScroll">
+            <div class="saved-link-feed-scroll">
               <section class="saved-link-feed">
                 <article v-for="item in filtered" :key="item.id" class="saved-link-post">
                   <header class="saved-link-post__header">
                     <div class="saved-link-post__user">
-                      <div class="saved-link-post__avatar"><img v-if="item.author_avatar_url" class="saved-link-post__avatar-image" :src="item.author_avatar_url" alt=""><span v-else>{{ item.author_username.slice(0, 1).toUpperCase() }}</span></div>
+                      <div class="saved-link-post__avatar"><img v-if="avatarSource(item)&&!avatarFailures.has(item.author_user_id)" class="saved-link-post__avatar-image" :src="avatarSource(item)" alt="" @error="avatarFailed(item)"><span v-else>{{ item.author_username.slice(0, 1).toUpperCase() }}</span></div>
                       <div class="saved-link-post__identity">
                         <div class="saved-link-post__author-row">
                           <strong class="saved-link-post__author">{{ item.author_username }}</strong>

@@ -26,13 +26,9 @@ ion-router-outlet ion-page ion-content>main{animation:app-content-in .28s cubic-
 button,.compact-row,.module-item,.record-item,.app-tabbar ion-tab-button{transition:transform .16s ease,opacity .16s ease,background-color .16s ease,box-shadow .16s ease}
 button:active,.compact-row:active,.module-item:active,.record-item:active{transform:scale(.985)}
 .module-item:active .module-icon{box-shadow:0 5px 14px rgba(25,145,255,.18)}
-.app-tabbar ion-tab-button.tab-selected ion-icon{animation:tab-icon-pop .24s ease both}
 .add-tab .add-button{transition:transform .18s ease,box-shadow .18s ease}.add-tab .add-button:active{transform:scale(.92);box-shadow:0 3px 9px rgba(32,165,238,.22)}
 @keyframes app-content-in{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 @keyframes app-row-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
-@keyframes tab-icon-pop{0%{transform:scale(.82)}70%{transform:scale(1.1)}100%{transform:scale(1)}}
-ion-router-outlet .route-page-enter{animation:route-page-enter .3s cubic-bezier(.22,.72,.25,1) both}
-@keyframes route-page-enter{from{opacity:.72;transform:translate3d(0,10px,0)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
 
 /* Mobile enterprise UI refresh: quiet surfaces, stronger hierarchy, compact iOS chrome. */

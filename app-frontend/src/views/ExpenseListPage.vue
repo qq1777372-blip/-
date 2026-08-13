@@ -63,6 +63,10 @@ function recordTime(value: string) {
   }).format(parsed)
 }
 
+function openRecord(record: CompanyExpense) {
+  void router.push(`/tabs/detail/company-expenses/${record.id}`)
+}
+
 async function load(event?: { target: { complete: () => void } }) {
   try {
     const [items, stats] = await Promise.all([
@@ -133,7 +137,7 @@ onMounted(load)
           <header><span>{{ dayLabel(day.date) }}</span><em>{{ amount(day.total) }}</em></header>
           <IonList class="day-list" lines="none">
             <IonItemSliding v-for="record in day.items" :key="record.id">
-              <IonItem class="record-item" button :detail="false" @click="router.push(`/tabs/detail/company-expenses/${record.id}`)">
+              <IonItem class="record-item" button :detail="false" @click.stop="openRecord(record)">
                 <article class="record">
                   <div class="record-icon">{{ record.category.slice(0, 1) }}</div>
                   <div class="record-body">
