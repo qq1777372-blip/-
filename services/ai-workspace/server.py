@@ -659,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
         connection = None
         try:
             data = self.read_json(); connection = db(); now = int(time.time()); request_started = time.perf_counter()
-            admin_paths = ("/api/connections/save", "/api/connections/delete", "/api/connections/sync", "/api/connections/test", "/api/connections/toggle", "/api/config", "/api/models", "/api/models/sync", "/api/models/update", "/api/models/delete", "/api/prompts", "/api/prompts/delete", "/api/prompts/update", "/api/skills", "/api/skills/delete", "/api/skills/update", "/api/tools", "/api/tools/delete", "/api/tools/update", "/api/tools/test")
+            admin_paths = ("/api/connections/save", "/api/connections/delete", "/api/connections/sync", "/api/connections/models", "/api/connections/test", "/api/connections/toggle", "/api/config", "/api/models", "/api/models/sync", "/api/models/update", "/api/models/delete", "/api/prompts", "/api/prompts/delete", "/api/prompts/update", "/api/skills", "/api/skills/delete", "/api/skills/update", "/api/tools", "/api/tools/delete", "/api/tools/update", "/api/tools/test")
             editor_paths = ("/api/knowledge", "/api/knowledge/delete", "/api/documents/import-file", "/api/files/assign", "/api/files/reprocess", "/api/files/delete")
             if self.path in admin_paths: self.require_role("admin")
             elif self.path in editor_paths: self.require_role("editor")
@@ -684,6 +684,10 @@ class Handler(BaseHTTPRequestHandler):
                 item_id = str(data.get("id", "")); connection.execute("DELETE FROM models WHERE connection_id=?", (item_id,)); connection.execute("DELETE FROM provider_connections WHERE id=?", (item_id,)); connection.commit(); json_response(self, 200, {"ok": True})
             elif self.path == "/api/connections/sync":
                 item_id = str(data.get("id", "")); result = sync_provider_models(connection, now, item_id); json_response(self, 200, {"ok": True, **result})
+            elif self.path == "/api/connections/models":
+                item_id = str(data.get("id", "")); provider = connection.execute("SELECT * FROM provider_connections WHERE id=? AND enabled=1", (item_id,)).fetchone()
+                if not provider: raise ValueError("连接不存在或未启用")
+                json_response(self, 200, {"ok": True, "models": fetch_provider_model_ids(provider)})
             elif self.path == "/api/connections/test":
                 item_id = str(data.get("id", "")); provider = connection.execute("SELECT * FROM provider_connections WHERE id=?", (item_id,)).fetchone()
                 if not provider: raise ValueError("连接不存在")

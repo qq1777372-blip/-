@@ -6,6 +6,7 @@ import {
   IonIcon,
   IonPage,
   IonSpinner,
+  alertController,
   toastController,
 } from "@ionic/vue";
 import {
@@ -17,6 +18,16 @@ import {
 } from "ionicons/icons";
 import PageHeader from "../components/PageHeader.vue";
 import { session } from "../session";
+async function confirmApp(message: string) {
+  return new Promise<boolean>(async (resolve) => {
+    const alert = await alertController.create({ header: "请确认", message, buttons: [
+      { text: "取消", role: "cancel", handler: () => resolve(false) },
+      { text: "确定", role: "destructive", handler: () => resolve(true) },
+    ] });
+    alert.onDidDismiss().then(({ role }) => { if (role === "backdrop") resolve(false); });
+    await alert.present();
+  });
+}
 type Kind = "prompts" | "skills" | "tools" | "notes";
 type Item = {
   id: string;
@@ -172,7 +183,7 @@ async function testTool() {
 }
 async function remove(item: Item) {
   if (item.id.startsWith("builtin-")) return void notify("内置工具不能删除");
-  if (!confirm("确定删除这项能力？")) return;
+  if (!(await confirmApp("确定删除这项能力？"))) return;
   try {
     await api(`${tab.value}/delete`, {
       method: "POST",

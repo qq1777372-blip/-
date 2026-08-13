@@ -6,6 +6,7 @@ import {
   IonIcon,
   IonPage,
   IonSpinner,
+  alertController,
   toastController,
 } from "@ionic/vue";
 import {
@@ -26,6 +27,20 @@ import {
 } from "../utils/aiProviders";
 
 const providerAssetBase = "/app/ai-providers/";
+async function confirmApp(message: string) {
+  return new Promise<boolean>(async (resolve) => {
+    const alert = await alertController.create({
+      header: "请确认",
+      message,
+      buttons: [
+        { text: "取消", role: "cancel", handler: () => resolve(false) },
+        { text: "确定", role: "destructive", handler: () => resolve(true) },
+      ],
+    });
+    alert.onDidDismiss().then(({ role }) => { if (role === "backdrop") resolve(false); });
+    await alert.present();
+  });
+}
 type Connection = {
   id: string;
   name: string;
@@ -77,6 +92,8 @@ const tab = ref<"models" | "connections">("models"),
   connectionOpen = ref(false),
   modelOpen = ref(false),
   saving = ref(false),
+  discoveringModels = ref(false),
+  availableBaseModels = ref<string[]>([]),
   page = ref(1),
   pageSize = ref(10),
   importInput = ref<HTMLInputElement | null>(null);
@@ -264,7 +281,27 @@ function newModel() {
     sort_order: 0,
   };
   modelOpen.value = true;
+  void discoverBaseModels();
 }
+async function discoverBaseModels() {
+  availableBaseModels.value = [];
+  if (!modelForm.value.connection_id || modelForm.value.id || discoveringModels.value) return;
+  discoveringModels.value = true;
+  try {
+    const result = await api<{ models: string[] }>("connections/models", {
+      method: "POST",
+      body: JSON.stringify({ id: modelForm.value.connection_id }),
+    });
+    availableBaseModels.value = result.models || [];
+  } catch (e) {
+    await notify(e instanceof Error ? e.message : "读取可用模型失败");
+  } finally {
+    discoveringModels.value = false;
+  }
+}
+watch(() => modelForm.value.connection_id, () => {
+  if (modelOpen.value && !modelForm.value.id) void discoverBaseModels();
+});
 async function saveModel() {
   saving.value = true;
   try {
@@ -282,7 +319,7 @@ async function saveModel() {
   }
 }
 async function removeModel(m: Model) {
-  if (!confirm(`删除模型“${m.name}”？`)) return false;
+  if (!(await confirmApp(`删除模型“${m.name}”？`))) return false;
   try {
     await api("models/delete", {
       method: "POST",
@@ -434,7 +471,7 @@ async function testConnection(c: Connection) {
   }
 }
 async function removeConnection(c: Connection) {
-  if (!confirm(`删除连接“${c.name}”及其同步模型？`)) return false;
+  if (!(await confirmApp(`删除连接“${c.name}”及其同步模型？`))) return false;
   try {
     await api("connections/delete", {
       method: "POST",
@@ -965,7 +1002,14 @@ onMounted(load);
         <label
           >基础模型<input
             v-model="modelForm.base_model"
-            :disabled="Boolean(modelForm.id)" /></label
+            list="available-base-models"
+            :placeholder="discoveringModels ? '正在读取可用模型...' : availableBaseModels.length ? '搜索或选择模型' : '输入模型 ID'"
+            :disabled="Boolean(modelForm.id)" />
+          <datalist id="available-base-models">
+            <option v-for="item in availableBaseModels" :key="item" :value="item" />
+          </datalist>
+          <small v-if="!modelForm.id && availableBaseModels.length">该连接可用 {{ availableBaseModels.length }} 个模型，也可手动输入</small>
+        </label
         ><label
           >模型类型<select v-model="modelForm.model_type">
             <option value="chat">对话</option>
@@ -1354,16 +1398,23 @@ article > button {
 }
 .mask > section {
   width: 100%;
-  max-height: 86vh;
+  max-height: min(86vh, 86dvh);
   overflow: auto;
-  padding: 14px 14px calc(20px + env(safe-area-inset-bottom));
+  overscroll-behavior: contain;
+  padding: 0 14px calc(20px + env(safe-area-inset-bottom));
   border-radius: 8px 8px 0 0;
   background: var(--app-card);
 }
 section header {
+  position: sticky;
+  z-index: 3;
+  top: 0;
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  min-height: 50px;
   margin-bottom: 12px;
+  background: var(--app-card);
 }
 section header button {
   border: 0;
@@ -1784,12 +1835,12 @@ article > button {
 .mask section select {
   min-height: 46px;
   padding-inline: 13px;
-  font-size: 14px;
+  font-size: 16px;
 }
 .mask section textarea {
   min-height: 88px;
   padding: 12px 13px;
-  font-size: 14px;
+  font-size: 16px;
 }
 .provider-picker button {
   min-height: 52px;

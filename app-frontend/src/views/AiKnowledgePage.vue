@@ -7,6 +7,7 @@ import {
   IonIcon,
   IonPage,
   IonSpinner,
+  alertController,
   toastController,
 } from "@ionic/vue";
 import {
@@ -20,6 +21,16 @@ import {
 import PageHeader from "../components/PageHeader.vue";
 import { session } from "../session";
 import { apiUrl } from "../runtime";
+async function confirmApp(message: string) {
+  return new Promise<boolean>(async (resolve) => {
+    const alert = await alertController.create({ header: "请确认", message, buttons: [
+      { text: "取消", role: "cancel", handler: () => resolve(false) },
+      { text: "确定", role: "destructive", handler: () => resolve(true) },
+    ] });
+    alert.onDidDismiss().then(({ role }) => { if (role === "backdrop") resolve(false); });
+    await alert.present();
+  });
+}
 
 type Collection = { id: string; name: string; description?: string };
 type KnowledgeFile = {
@@ -131,11 +142,11 @@ function assetUrl(path:string){return apiUrl(`/ai-api/files/asset?path=${encodeU
 async function testSearch(){const query=searchQuery.value.trim();if(!query)return;searching.value=true;try{const result=await api<{documents:Array<{id:string;title:string;content?:string}>}>("search",{method:"POST",body:JSON.stringify({query,knowledge_id:selectedCollection.value||undefined,limit:10})});searchResults.value=result.documents||[]}catch(error){await notify(error instanceof Error?error.message:"检索失败")}finally{searching.value=false}}
 async function remove(kind: "files" | "knowledge", id: string) {
   if (
-    !confirm(
+    !(await confirmApp(
       kind === "files"
         ? "确定删除这个文件？"
         : "确定删除这个知识集合？集合内文件不会被删除。",
-    )
+    ))
   )
     return;
   try {

@@ -14,6 +14,7 @@ import {
   volumeHighOutline,
 } from "ionicons/icons";
 import PageHeader from "../components/PageHeader.vue";
+import AppDialog from "../components/AppDialog.vue";
 import { session } from "../session";
 
 type Message = { id: string; role: "user" | "assistant"; content: string; imageUrl?: string; imageUrls?: string[] };
@@ -53,6 +54,8 @@ const optionsOpen = ref(false);
 const galleryOpen = ref(false);
 const showArchived = ref(false);
 const chatSearch = ref("");
+const dialog = ref({ open: false, title: "", value: "", multiline: false, action: "" as "rename" | "edit" | "note" | "" });
+let dialogMessage: Message | null = null;
 let mediaRecorder: MediaRecorder | null = null;
 
 const storageKey = computed(() => `ruoshop-ai-workspace:${session.user?.id || "local"}`);
@@ -136,7 +139,7 @@ function removeChat(id: string) {
 }
 
 function toggleFavorite() { if (activeChat.value) { activeChat.value.favorite = !activeChat.value.favorite; save(); } }
-function renameChat() { const c = activeChat.value; if (!c) return; const t = window.prompt("输入新名称", c.title)?.trim(); if (t) { c.title = t; c.updatedAt = Date.now(); save(); } }
+function renameChat() { const c = activeChat.value; if (!c) return; dialog.value = { open: true, title: "重命名会话", value: c.title, multiline: false, action: "rename" }; }
 function archiveChat() { const c = activeChat.value; if (!c) return; c.archived = !c.archived; showArchived.value = Boolean(c.archived); save(); }
 
 function branchChat() {
@@ -262,10 +265,8 @@ async function send(text = prompt.value) {
 function stopGeneration() { activeRequest.value?.abort(); }
 
 function editMessage(msg: Message) {
-  const chat = activeChat.value; if (!chat) return;
-  const idx = chat.messages.findIndex((m) => m.id === msg.id);
-  const content = window.prompt("编辑消息", msg.content)?.trim();
-  if (idx < 0 || !content) return; chat.messages.splice(idx); prompt.value = content; save();
+  dialogMessage = msg;
+  dialog.value = { open: true, title: "编辑消息", value: msg.content, multiline: true, action: "edit" };
 }
 
 function regenerate(msg: Message) {
@@ -289,9 +290,16 @@ async function copy(content: string) {
 }
 
 async function saveAsNote(msg: Message) {
-  const title = window.prompt("笔记标题", activeChat.value?.title || "AI 回答")?.trim(); if (!title) return;
-  try { await api("notes", { method: "POST", body: JSON.stringify({ title, content: msg.content }) }); await notify("已保存到 Notes"); }
-  catch (e) { await notify(e instanceof Error ? e.message : "保存失败", "danger"); }
+  dialogMessage = msg;
+  dialog.value = { open: true, title: "笔记标题", value: activeChat.value?.title || "AI 回答", multiline: false, action: "note" };
+}
+async function confirmDialog(value: string) {
+  if (!value) return;
+  const action = dialog.value.action; dialog.value.open = false;
+  if (action === "rename" && activeChat.value) { activeChat.value.title = value; activeChat.value.updatedAt = Date.now(); save(); }
+  if (action === "edit" && dialogMessage && activeChat.value) { const idx = activeChat.value.messages.findIndex((m) => m.id === dialogMessage?.id); if (idx >= 0) { activeChat.value.messages.splice(idx); prompt.value = value; save(); } }
+  if (action === "note" && dialogMessage) { try { await api("notes", { method: "POST", body: JSON.stringify({ title: value, content: dialogMessage.content }) }); await notify("已保存到 Notes"); } catch (e) { await notify(e instanceof Error ? e.message : "保存失败", "danger"); } }
+  dialogMessage = null;
 }
 
 async function exportAnswer(msg: Message, format: "docx" | "xlsx" | "pdf") {
@@ -552,6 +560,7 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
         </div>
       </aside>
     </div>
+    <AppDialog :open="dialog.open" :title="dialog.title" :value="dialog.value" :multiline="dialog.multiline" @close="dialog.open = false" @confirm="confirmDialog" />
   </IonPage>
 </template>
 

@@ -18,6 +18,7 @@ import {
   trashOutline,
 } from "ionicons/icons";
 import PageHeader from "../components/PageHeader.vue";
+import AppDialog from "../components/AppDialog.vue";
 import { session } from "../session";
 
 type Row = Record<string, any>;
@@ -50,6 +51,9 @@ const workflowOpen = ref(false),
     steps: Row[];
     enabled?: boolean;
   }>({ name: "", description: "", steps: [], enabled: true });
+const dialog = ref({ open: false, title: "", value: "", multiline: false, action: "" as "run" | "usage" | "memoryAdd" | "memoryEdit" | "confirm" | "" });
+let dialogRow: Row | null = null;
+const pendingConfirm = ref<{ path: string; id: string; message: string } | null>(null);
 let timer: number | undefined;
 
 async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
@@ -100,20 +104,13 @@ async function load() {
   }
 }
 async function addMemory() {
-  const content = prompt("输入需要 AI 长期记住的内容")?.trim();
-  if (!content) return;
-  await api("memories", { method: "POST", body: JSON.stringify({ content }) });
-  await load();
+  dialogRow = null; dialog.value = { open: true, title: "新增长期记忆", value: "", multiline: true, action: "memoryAdd" };
 }
-async function editMemory(row:Row){const content=prompt("编辑长期记忆",row.content)?.trim();if(!content)return;await api("memories",{method:"POST",body:JSON.stringify({...row,content,enabled:Boolean(row.enabled)})});await load();await notify("记忆已保存")}
+async function editMemory(row:Row){dialogRow = row; dialog.value = { open: true, title: "编辑长期记忆", value: row.content || "", multiline: true, action: "memoryEdit" };}
 async function toggleMemory(row:Row){await api("memories",{method:"POST",body:JSON.stringify({...row,enabled:!row.enabled})});await load()}
 async function removeMemory(id: string) {
-  if (!confirm("删除这条长期记忆？")) return;
-  await api("memories/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  });
-  await load();
+  pendingConfirm.value = { path: "memories/delete", id, message: "确定删除这条长期记忆？" };
+  dialog.value = { open: true, title: "删除记忆", value: pendingConfirm.value.message, multiline: false, action: "confirm" };
 }
 function editWorkflow(row?: Row) {
   let steps: Row[] = [];
@@ -151,27 +148,32 @@ async function saveWorkflow() {
   await notify("工作流已保存");
 }
 async function runWorkflow(row: Row) {
-  const input = prompt("输入本次运行参数") ?? "";
+  dialogRow = row; dialog.value = { open: true, title: "运行参数", value: "", multiline: true, action: "run" };
+}
+async function confirmDialog(value: string) {
+  const action = dialog.value.action; dialog.value.open = false;
+  if (action === "confirm" && pendingConfirm.value) { const target = pendingConfirm.value; pendingConfirm.value = null; await api(target.path, { method: "POST", body: JSON.stringify({ id: target.id }) }); await load(); return; }
+  if (action === "run" && dialogRow) {
+    const row = dialogRow; dialogRow = null;
   await api("workflows/run", {
     method: "POST",
-    body: JSON.stringify({ id: row.id, input }),
+    body: JSON.stringify({ id: row.id, input: value }),
   });
   tab.value = "jobs";
   await load();
   await notify("任务已进入后台执行");
+  }
+  if (action === "memoryAdd") { await api("memories", { method: "POST", body: JSON.stringify({ content: value }) }); await load(); }
+  if (action === "memoryEdit" && dialogRow) { await api("memories", { method: "POST", body: JSON.stringify({ ...dialogRow, content: value, enabled: Boolean(dialogRow.enabled) }) }); dialogRow = null; await load(); await notify("记忆已保存"); }
 }
 async function removeWorkflow(id: string) {
-  if (!confirm("删除这个工作流？")) return;
-  await api("workflows/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  });
-  await load();
+  pendingConfirm.value = { path: "workflows/delete", id, message: "确定删除这个工作流？" };
+  dialog.value = { open: true, title: "删除工作流", value: pendingConfirm.value.message, multiline: false, action: "confirm" };
 }
 async function toggleWorkflow(row:Row){await api("workflows",{method:"POST",body:JSON.stringify({id:row.id,name:row.name,description:row.description||"",steps:JSON.parse(row.steps||"[]"),enabled:!row.enabled})});await load()}
 async function jobAction(row:Row,action:"cancel"|"retry"|"delete"){await api(`jobs/${action}`,{method:"POST",body:JSON.stringify({id:row.id})});await load();await notify(action==="cancel"?"任务已取消":action==="retry"?"任务已重试":"任务已删除")}
-function showUsage(row:Row){alert(`操作：${row.operation}\n模型：${row.model_id||"默认模型"}\n状态：${row.status}\nToken：${row.input_tokens+row.output_tokens}\n耗时：${row.latency_ms} ms\n\n${row.detail||"无错误详情"}`)}
-async function revokeShare(id:string){if(!confirm("撤销后分享链接将立即失效，是否继续？"))return;await api("shares/revoke",{method:"POST",body:JSON.stringify({id})});await load();await notify("分享已撤销")}
+function showUsage(row:Row){dialogRow = row; dialog.value = { open: true, title: "用量详情", value: `操作：${row.operation}\n模型：${row.model_id||"默认模型"}\n状态：${row.status}\nToken：${row.input_tokens+row.output_tokens}\n耗时：${row.latency_ms} ms\n\n${row.detail||"无错误详情"}`, multiline: false, action: "usage" };}
+async function revokeShare(id:string){pendingConfirm.value={path:"shares/revoke",id,message:"撤销后分享链接将立即失效，是否继续？"};dialog.value={open:true,title:"撤销分享",value:pendingConfirm.value.message,multiline:false,action:"confirm"}}
 function steps(row: Row) {
   try {
     return JSON.parse(row.steps || "[]").length;
@@ -366,7 +368,7 @@ onBeforeUnmount(() => timer && clearInterval(timer));
           ><IonIcon :icon="addOutline" />添加步骤</IonButton
         ><IonButton expand="block" @click="saveWorkflow">保存工作流</IonButton>
       </section>
-    </div></IonPage
+    </div><AppDialog :open="dialog.open" :title="dialog.title" :value="dialog.value" :multiline="dialog.multiline" :readonly="dialog.action === 'usage' || dialog.action === 'confirm'" :confirm-only="dialog.action === 'confirm'" @close="dialog.open = false" @confirm="confirmDialog" /></IonPage
   >
 </template>
 
