@@ -41,6 +41,7 @@ type Message = {
   content: string;
   imageUrl?: string;
   imageUrls?: string[];
+  fileIds?: string[];
   sources?: KnowledgeDocument[];
   createdAt: number;
 };
@@ -85,6 +86,7 @@ const useWebSearch = ref(false);
 const imageMode = ref(false);
 const imageSize = ref("1024x1024");
 const pendingImages = ref<string[]>([]);
+const pendingFileIds = ref<string[]>([]);
 const recording = ref(false);
 let mediaRecorder: MediaRecorder | null = null;
 const config = ref<AiConfig>({ base_url: "", model: "", has_key: false });
@@ -755,12 +757,15 @@ async function sendPrompt(text = prompt.value) {
   prompt.value = "";
   const attachedImages = [...pendingImages.value];
   pendingImages.value = [];
+  const attachedFileIds = [...pendingFileIds.value];
+  pendingFileIds.value = [];
   const now = Date.now();
   conversation.messages.push({
     id: uid("user"),
     role: "user",
     content: question,
     imageUrls: attachedImages,
+    fileIds: attachedFileIds,
     createdAt: now,
   });
   if (conversation.messages.length === 1)
@@ -827,6 +832,18 @@ async function sendPrompt(text = prompt.value) {
         );
       }
     }
+    const pageUrl = question.match(/https?:\/\/[^\s<>]+/i)?.[0]?.replace(/[),.;!?]+$/, "");
+    if (pageUrl) {
+      try {
+        const page = await knowledgeApi<{ page: KnowledgeDocument }>("web-pages/read", {
+          method: "POST",
+          body: JSON.stringify({ url: pageUrl }),
+        });
+        if (page.page?.content) sources.push(page.page);
+      } catch (error) {
+        ElMessage.warning(error instanceof Error ? `网页读取失败：${error.message}` : "网页读取失败");
+      }
+    }
     const assistant: Message = {
       id: uid("assistant"),
       role: "assistant",
@@ -850,8 +867,16 @@ async function sendPrompt(text = prompt.value) {
       },
       signal: activeRequest.value.signal,
       body: JSON.stringify({
+        chat_id: conversation.id,
+        messages: conversation.messages.slice(0, -1).map(({ role, content, imageUrls, fileIds }) => ({
+          role,
+          content,
+          imageUrls,
+          fileIds,
+        })),
         question,
         image_urls: attachedImages,
+        file_ids: attachedFileIds,
         documents: sources,
         model_id: safeModelId,
         skill_ids: selectedSkillIds.value,
@@ -1122,7 +1147,7 @@ async function importFiles(event: Event) {
         reader.onerror = () => reject(new Error(`${file.name} 读取失败`));
         reader.readAsDataURL(file);
       });
-      await knowledgeApi("documents/import-file", {
+      const importedFile = await knowledgeApi<{ file?: { id?: string } }>("documents/import-file", {
         method: "POST",
         body: JSON.stringify({
           title: file.name.replace(/\.[^.]+$/, ""),
@@ -1130,6 +1155,7 @@ async function importFiles(event: Event) {
           data,
         }),
       });
+      if (importedFile.file?.id) pendingFileIds.value.push(String(importedFile.file.id));
       imported += 1;
     }
     ElMessage.success(`已导入 ${imported} 个文件`);
@@ -1142,6 +1168,8 @@ async function importFiles(event: Event) {
 }
 
 watch(activeId, () => {
+  pendingImages.value = [];
+  pendingFileIds.value = [];
   const rememberedId = activeConversation.value?.modelId;
   if (
     rememberedId &&
@@ -1394,7 +1422,7 @@ onMounted(async () => {
                 :key="source.chunk_id || source.id"
                 type="button"
                 @click="openKnowledgeSource(source)"
-                >[{{ index + 1 }}] {{ source.title }}</button
+                ><span>[{{ index + 1 }}] {{ source.title }}</span><small v-if="source.url">{{ source.url }}</small></button
               >
             </div>
             <div class="message-actions">
@@ -2128,11 +2156,12 @@ onMounted(async () => {
   font-size: 11px;
 }
 .message-sources span {
-  padding: 5px 8px;
-  border-radius: 5px;
-  background: #f1f5f9;
-  color: var(--text-secondary);
   font-size: 11px;
+}
+.message-sources small {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 10px;
 }
 .copy-message {
   margin-top: 8px;
@@ -2540,6 +2569,9 @@ onMounted(async () => {
 }
 .message-sources a,
 .message-sources button {
+  display: grid;
+  gap: 2px;
+  text-align: left;
   padding: 5px 8px;
   border-radius: 5px;
   background: #f1f5f9;

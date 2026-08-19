@@ -65,6 +65,7 @@ jobs:
           tar -czf backend.tar.gz main.py schemas.py database.py models.py requirements.txt app alembic alembic.ini scripts tests
           tar -czf frontend.tar.gz -C frontend/dist .
           tar -czf app-frontend.tar.gz -C app-frontend-dist .
+          tar -czf ai-workspace.tar.gz -C services/ai-workspace README.md migrate_legacy_knowledge.py requirements.txt server.py test_server.py
 
       # An undefined secret renders as an empty string rather than failing, so
       # release 2026.08.07.20 died here in 0s with nothing but "exit code 1":
@@ -169,6 +170,6 @@ jobs:
           # written for exactly that shape: an unprivileged login user that
           # escalates with sudo for all 37 of its writes.
           ssh $SSH_OPTS ubuntu@"$DEPLOY_HOST" "mkdir -p '$STAGE_DIR'"
-          scp $SSH_OPTS backend.tar.gz frontend.tar.gz app-frontend.tar.gz ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
+          scp $SSH_OPTS backend.tar.gz frontend.tar.gz app-frontend.tar.gz ai-workspace.tar.gz ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
           scp $SSH_OPTS scripts/deploy_remote.sh ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
           ssh $SSH_OPTS ubuntu@"$DEPLOY_HOST" "bash '$STAGE_DIR/deploy_remote.sh' '$VERSION' '$STAGE_DIR' '$VERSION'"

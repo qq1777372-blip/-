@@ -49,6 +49,7 @@ const form = ref({
   provider_id: "openai",
   purpose: "general",
   enabled: true,
+  model_ids_text: "",
 });
 const purposeLabels: Record<string, string> = {
   general: "通用",
@@ -213,6 +214,7 @@ function newModel() {
     filters_text: "",
     actions_text: "",
     sort_order: 0,
+    connection_id: connections.value.find((item) => item.enabled !== 0)?.id || "",
   };
   modelDialog.value = true;
 }
@@ -225,11 +227,11 @@ function duplicateModel() {
   ElMessage.info("已创建副本草稿，保存后生效");
 }
 function selectBaseModel(baseModel: string) {
-  const source = models.value.find(
-    (m) => m.base_model === baseModel && m.connection_id,
-  );
-  modelForm.value.connection_id = source?.connection_id || "";
-  if (!modelForm.value.name) modelForm.value.name = baseModel;
+  const [connectionID, ...modelParts] = String(baseModel).split("::");
+  const actualBaseModel = modelParts.join("::") || String(baseModel);
+  modelForm.value.base_model = actualBaseModel;
+  modelForm.value.connection_id = connectionID || "";
+  if (!modelForm.value.name) modelForm.value.name = actualBaseModel;
 }
 async function saveModel() {
   try {
@@ -382,18 +384,28 @@ function openConnection(c?: Item) {
     provider_id: c?.provider_id || "custom",
     purpose: c?.purpose || "general",
     enabled: c?.enabled !== 0,
+    model_ids_text: Array.isArray(c?.model_ids) ? c.model_ids.join("\n") : "",
   };
   connectionDialog.value = true;
 }
 async function saveConnection() {
   try {
-    await api("connections/save", {
+    const result = await api<{ sync_error?: string }>("connections/save", {
       method: "POST",
-      body: JSON.stringify(form.value),
+      body: JSON.stringify({
+        ...form.value,
+        model_ids: String(form.value.model_ids_text || "")
+          .split(/[\n,]/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+        sync_models: true,
+      }),
     });
     connectionDialog.value = false;
     await load();
-    ElMessage.success("连接已保存并同步模型");
+    result.sync_error
+      ? ElMessage.warning(`连接已保存，但模型同步失败：${result.sync_error}`)
+      : ElMessage.success("连接已保存并同步模型");
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "保存失败");
   }
@@ -730,7 +742,14 @@ onMounted(load);
             v-model="form.api_key"
             type="password"
             show-password
-            placeholder="留空表示保持原密钥" /></el-form-item></el-form
+            placeholder="留空表示保持原密钥" /></el-form-item
+        ><el-form-item label="手动模型 ID（可选）"
+          ><el-input
+            v-model="form.model_ids_text"
+            type="textarea"
+            :rows="3"
+            placeholder="每行一个，例如 gemini-2.5-flash；留空则自动读取 /models" /><div class="form-help">供应商不支持模型列表接口时，填写这里即可保存并使用。</div></el-form-item
+      ></el-form
       ><template #footer
         ><el-button @click="connectionDialog = false">取消</el-button
         ><el-button type="primary" @click="saveConnection"
@@ -743,6 +762,13 @@ onMounted(load);
         <div class="form-grid">
           <el-form-item label="显示名称"
             ><el-input v-model="modelForm.name" /></el-form-item
+          ><el-form-item label="所属账号连接"
+            ><el-select v-model="modelForm.connection_id" style="width: 100%" placeholder="选择账号连接"
+              ><el-option
+                v-for="connection in connections.filter((item) => item.enabled !== 0)"
+                :key="connection.id"
+                :label="connection.name"
+                :value="connection.id" /></el-select></el-form-item
           ><el-form-item label="基础模型"
             ><el-select
               v-if="!modelForm.id"
@@ -755,7 +781,7 @@ onMounted(load);
                 v-for="item in models.filter((m) => m.connection_id)"
                 :key="item.id"
                 :label="`${item.name} · ${connections.find((c) => c.id === item.connection_id)?.name || ''}`"
-                :value="item.base_model" /></el-select
+                :value="`${item.connection_id}::${item.base_model}`" /></el-select
             ><el-input v-else v-model="modelForm.base_model" disabled
           /></el-form-item>
         </div>

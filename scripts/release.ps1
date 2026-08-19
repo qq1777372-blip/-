@@ -27,6 +27,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $FrontendRoot = Join-Path $ProjectRoot "frontend"
 $AppRoot = Join-Path $ProjectRoot "app-frontend"
+$AiRoot = Join-Path $ProjectRoot "services\ai-workspace"
 $Artifacts = Join-Path $ProjectRoot ".release\$Version"
 $RemoteStage = "/tmp/ruoshop-release-$Version"
 
@@ -107,6 +108,13 @@ $Payload = @(
   (Join-Path $Artifacts "backend.tar.gz"),
   (Join-Path $Artifacts "frontend.tar.gz")
 )
+
+if (-not (Test-Path -LiteralPath (Join-Path $AiRoot "server.py"))) {
+  throw "AI workspace service is missing at $AiRoot"
+}
+tar -czf (Join-Path $Artifacts "ai-workspace.tar.gz") -C $AiRoot `
+  README.md migrate_legacy_knowledge.py requirements.txt server.py test_server.py
+$Payload += (Join-Path $Artifacts "ai-workspace.tar.gz")
 
 if ($BuildApp) {
   Invoke-FrontendBuild -Root $AppRoot -Label "Mobile App"

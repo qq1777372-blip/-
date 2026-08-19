@@ -50,6 +50,7 @@ type Connection = {
   enabled: number;
   has_key?: boolean;
   purpose?: string;
+  model_ids?: string[];
 };
 type Resource = { id: string; name: string };
 type Model = {
@@ -105,6 +106,7 @@ const connectionForm = ref({
   provider_id: "openai",
   api_key: "",
   purpose: "general",
+  model_ids_text: "",
 });
 function connectionProvider(c: Connection) {
   const configured = providerPreset(c.provider_id);
@@ -413,6 +415,7 @@ function openConnection(c?: Connection) {
         provider_id: c.provider_id || "custom",
         api_key: "",
         purpose: c.purpose || "general",
+        model_ids_text: (c.model_ids || []).join("\n"),
       }
     : {
         id: "",
@@ -422,6 +425,7 @@ function openConnection(c?: Connection) {
         provider_id: "openai",
         api_key: "",
         purpose: "general",
+        model_ids_text: "",
       };
   connectionOpen.value = true;
 }
@@ -435,13 +439,21 @@ function selectProvider(id: string) {
 async function saveConnection() {
   saving.value = true;
   try {
-    await api("connections/save", {
+    const result = await api<{ sync_error?: string }>("connections/save", {
       method: "POST",
-      body: JSON.stringify({ ...connectionForm.value, enabled: true }),
+      body: JSON.stringify({
+        ...connectionForm.value,
+        enabled: true,
+        model_ids: String(connectionForm.value.model_ids_text || "")
+          .split(/[\n,]/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+        sync_models: true,
+      }),
     });
     connectionOpen.value = false;
     await load();
-    await notify("连接已保存并同步");
+    await notify(result.sync_error ? `连接已保存，但模型同步失败：${result.sync_error}` : "连接已保存并同步");
   } catch (e) {
     await notify(e instanceof Error ? e.message : "保存失败");
   } finally {
@@ -929,6 +941,13 @@ onMounted(load);
               connectionForm.id ? '留空表示不修改' : '请输入 API Key'
             " /></label
         ><label
+          >手动模型 ID（可选）<textarea
+            v-model="connectionForm.model_ids_text"
+            rows="3"
+            placeholder="每行一个，例如 gemini-2.5-flash；留空则自动读取 /models"
+          ></textarea
+          ><small>供应商不支持模型列表接口时，填写这里即可保存并使用。</small></label
+        ><label
           >连接用途<select v-model="connectionForm.purpose">
             <option value="general">通用</option>
             <option value="chat">对话</option>
@@ -966,7 +985,6 @@ onMounted(load);
         <label
           >模型连接<select
             v-model="modelForm.connection_id"
-            :disabled="Boolean(modelForm.id)"
           >
             <option value="">请选择连接</option>
             <option

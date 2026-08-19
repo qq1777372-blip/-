@@ -20,6 +20,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 import operator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 from pathlib import Path
 from pypdf import PdfReader
 from docx import Document
@@ -41,10 +42,43 @@ class RateLimitError(ValueError):
     pass
 
 
+def parse_model_ids(value):
+    """Normalize a provider's optional manual model allowlist."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            value = re.split(r"[\n,]", value)
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:500]
+
+
+def upstream_http_error(error, service="模型服务"):
+    raw = error.read().decode("utf-8", errors="replace").strip()[:4000]
+    detail = raw
+    try:
+        payload = json.loads(raw)
+        error_value = payload.get("error", payload) if isinstance(payload, dict) else payload
+        if isinstance(error_value, dict):
+            detail = str(error_value.get("message") or error_value.get("detail") or error_value.get("status") or raw)
+        elif error_value:
+            detail = str(error_value)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    if "valid api key" in detail.lower():
+        detail = "API Key 无效，请重新粘贴 Google AI Studio 生成的 Gemini API Key"
+    return ValueError(f"{service}返回 HTTP {error.code}: {detail or error.reason}")
+
+
 def provider_api_base(base_url, provider_type="openai"):
     """Return the API root for a provider, accepting gateway roots as a convenience."""
     base = (base_url or "").rstrip("/")
-    if provider_type != "ollama" and not re.search(r"/v\d+$", base):
+    # Preset providers may use paths such as /v1beta/openai, /api/v3, or
+    # /compatibility/v1. They are already API roots and must not receive a
+    # second trailing /v1.
+    api_root = r"(?:/v\d+(?:beta)?(?:/openai)?|/api/v\d+|/compatibility/v\d+)$"
+    if provider_type != "ollama" and not re.search(api_root, base):
         return base + "/v1"
     return base
 
@@ -163,13 +197,144 @@ def web_search(query, limit=6):
     return results
 
 
+class PublicPageParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title_parts = []
+        self.text_parts = []
+        self._in_title = False
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "title":
+            self._in_title = True
+        if tag in {"script", "style", "noscript", "svg", "template"}:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag == "title":
+            self._in_title = False
+        if tag in {"script", "style", "noscript", "svg", "template"} and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data):
+        value = re.sub(r"\s+", " ", data).strip()
+        if not value or self._skip_depth:
+            return
+        if self._in_title:
+            self.title_parts.append(value)
+        else:
+            self.text_parts.append(value)
+
+
+def read_public_web_page(url):
+    parsed = urllib.parse.urlparse(str(url).strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("网页地址必须是 http 或 https")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+        if any(ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback or ipaddress.ip_address(address).is_reserved or ipaddress.ip_address(address).is_link_local for address in addresses):
+            raise ValueError("网页读取禁止访问本机、内网或保留地址")
+    except socket.gaierror as error:
+        raise ValueError("网页地址无法解析") from error
+    request = urllib.request.Request(parsed.geturl(), headers={"User-Agent": "Mozilla/5.0 RuoShopAdmin/1.0", "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        raw = response.read(2_000_000)
+        charset = response.headers.get_content_charset() or "utf-8"
+    source = raw.decode(charset, errors="replace")
+    parser = PublicPageParser()
+    parser.feed(source)
+    content = re.sub(r"\s+", " ", " ".join(parser.text_parts)).strip()[:40_000]
+    if not content:
+        raise ValueError("网页没有可读取的正文")
+    title = re.sub(r"\s+", " ", " ".join(parser.title_parts)).strip()[:200] or parsed.hostname
+    return {"id": "web-page-" + hashlib.sha256(parsed.geturl().encode()).hexdigest()[:16], "title": title, "url": parsed.geturl(), "content": content, "source": "web-page"}
+
+
+def message_text(content):
+    """Extract plain text from the string or multimodal content we persist."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(part.strip() for part in parts if part.strip()).strip()
+    if isinstance(content, dict) and isinstance(content.get("text"), str):
+        return content["text"].strip()
+    return ""
+
+
+def normalize_chat_messages(raw_messages, limit=24):
+    """Convert saved/client messages into provider-compatible chat messages."""
+    if not isinstance(raw_messages, list):
+        return []
+    result = []
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") in ("failed", "cancelled"):
+            continue
+        role = str(item.get("role", "")).strip().lower()
+        if role not in ("user", "assistant", "system"):
+            continue
+        text = message_text(item.get("content", ""))
+        image_urls = item.get("image_urls", item.get("imageUrls", []))
+        if not isinstance(image_urls, list):
+            image_urls = []
+        image_urls = [str(url) for url in image_urls if str(url).startswith(("data:image/", "https://", "http://"))][:4]
+        if not text and not image_urls:
+            continue
+        if image_urls and role == "user":
+            content = [{"type": "text", "text": text or "请分析这些图片"}]
+            content.extend({"type": "image_url", "image_url": {"url": url}} for url in image_urls)
+        else:
+            content = text
+        result.append({"role": role, "content": content})
+    return result[-limit:]
+
+
+def conversation_messages(connection, user_id, chat_id, fallback_messages):
+    """Load an owned conversation; use client history only for unsaved sessions."""
+    stored = []
+    if chat_id:
+        row = connection.execute("SELECT messages FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)).fetchone()
+        if row:
+            try:
+                stored = normalize_chat_messages(json.loads(row["messages"] or "[]"))
+            except (TypeError, json.JSONDecodeError):
+                stored = []
+    return stored or normalize_chat_messages(fallback_messages)
+
+
+def file_documents(connection, file_ids):
+    """Return imported file text as model context for an explicit chat attachment."""
+    if not isinstance(file_ids, list):
+        return []
+    ids = list(dict.fromkeys(str(item).strip() for item in file_ids if str(item).strip()))[:8]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    rows = connection.execute(f"SELECT id,name,content,status FROM files WHERE id IN ({placeholders})", ids).fetchall()
+    return [
+        {"id": row["id"], "title": row["name"], "content": row["content"][:20000], "status": row["status"], "source": "attachment"}
+        for row in rows
+        if row["content"] and row["status"] == "ready"
+    ]
+
+
 def db():
     connection = sqlite3.connect(DB)
     connection.row_factory = sqlite3.Row
     connection.executescript("""
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, name TEXT NOT NULL, base_model TEXT NOT NULL, description TEXT DEFAULT '', system_prompt TEXT DEFAULT '', capabilities TEXT DEFAULT '[]', updated_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS provider_connections (id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, provider_type TEXT NOT NULL DEFAULT 'openai', purpose TEXT NOT NULL DEFAULT 'general', updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS provider_connections (id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, provider_type TEXT NOT NULL DEFAULT 'openai', purpose TEXT NOT NULL DEFAULT 'general', model_ids TEXT DEFAULT '[]', updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS knowledge (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, knowledge_id TEXT, name TEXT NOT NULL, content TEXT DEFAULT '', path TEXT DEFAULT '', status TEXT DEFAULT 'ready', created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS file_chunks (id TEXT PRIMARY KEY, file_id TEXT NOT NULL, chunk_index INTEGER NOT NULL, content TEXT NOT NULL, embedding TEXT DEFAULT '');
@@ -191,6 +356,7 @@ def db():
     if "provider_type" not in provider_columns: connection.execute("ALTER TABLE provider_connections ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'openai'")
     if "purpose" not in provider_columns: connection.execute("ALTER TABLE provider_connections ADD COLUMN purpose TEXT NOT NULL DEFAULT 'general'")
     if "provider_id" not in provider_columns: connection.execute("ALTER TABLE provider_connections ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'custom'")
+    if "model_ids" not in provider_columns: connection.execute("ALTER TABLE provider_connections ADD COLUMN model_ids TEXT DEFAULT '[]'")
     provider_patterns = {
         "openai": ("api.openai.com",), "google": ("generativelanguage.googleapis.com",), "mistral": ("api.mistral.ai",),
         "groq": ("api.groq.com",), "xai": ("api.x.ai",), "openrouter": ("openrouter.ai",), "cohere": ("api.cohere.ai",),
@@ -248,6 +414,42 @@ def usage_cost(model, usage):
     if not model or not usage: return 0
     input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0); output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
     return input_tokens / 1_000_000 * float(model["input_price"] or 0) + output_tokens / 1_000_000 * float(model["output_price"] or 0)
+
+
+def upstream_event_value(value):
+    """Extract text from common OpenAI-compatible, Responses, Gemini, and Ollama events."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(upstream_event_value(item) for item in value)
+    if not isinstance(value, dict):
+        return ""
+    for key in ("delta", "text", "content", "output_text"):
+        candidate = value.get(key)
+        if isinstance(candidate, str):
+            return candidate
+        if isinstance(candidate, (dict, list)):
+            text = upstream_event_value(candidate)
+            if text:
+                return text
+    for key in ("message", "response", "output", "candidates", "choices", "parts"):
+        text = upstream_event_value(value.get(key))
+        if text:
+            return text
+    return ""
+
+
+def upstream_event_usage(value):
+    if not isinstance(value, dict):
+        return {}
+    usage = value.get("usage")
+    if isinstance(usage, dict):
+        return usage
+    for key in ("response", "data", "output"):
+        usage = upstream_event_usage(value.get(key))
+        if usage:
+            return usage
+    return {}
 
 
 def calculate_expression(question):
@@ -441,14 +643,24 @@ def add_chunk_embeddings(connection, file_id):
 def fetch_provider_model_ids(provider=None):
     api_key = provider["api_key"] if provider else setting("api_key")
     provider_type = provider["provider_type"] if provider and "provider_type" in provider.keys() else "openai"
+    manual_ids = parse_model_ids(provider["model_ids"] if provider and "model_ids" in provider.keys() else [])
+    if manual_ids:
+        return sorted(manual_ids)
     if not api_key and provider_type != "ollama": raise ValueError("请先在模型设置中配置 API Key")
     base_url = provider["base_url"] if provider else setting("base_url", "https://api.openai.com/v1")
     endpoint = base_url.rstrip("/") + ("/api/tags" if provider_type == "ollama" else "/models")
     headers = {"Accept": "application/json"}
     if api_key: headers["Authorization"] = "Bearer " + api_key
     request = urllib.request.Request(endpoint, headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8", errors="replace").lstrip("\ufeff \t\r\n")
+    except urllib.error.HTTPError as error:
+        raise upstream_http_error(error, "模型列表接口") from error
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError("接口地址返回的不是 JSON。请填写模型 API 接口地址，不要填写网页地址（例如 aistudio.google.com/app/apikey）。") from error
     items = payload.get("models", []) if provider_type == "ollama" else (payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else [])
     return sorted({str(item.get("name", item.get("id", ""))).strip() for item in items if isinstance(item, dict) and str(item.get("name", item.get("id", ""))).strip()})
 
@@ -486,11 +698,18 @@ def sync_enabled_provider_models(connection, now):
     providers = connection.execute("SELECT id FROM provider_connections WHERE enabled=1 ORDER BY updated_at DESC").fetchall()
     if not providers:
         raise ValueError("请先配置并启用模型连接")
-    results = [sync_provider_models(connection, now, provider["id"]) for provider in providers]
+    results = []
+    errors = []
+    for provider in providers:
+        try:
+            results.append(sync_provider_models(connection, now, provider["id"]))
+        except Exception as error:
+            errors.append({"id": provider["id"], "error": str(error)})
     return {
         "total": sum(item["total"] for item in results),
         "added": sum(item["added"] for item in results),
         "removed": sum(item["removed"] for item in results),
+        "errors": errors,
     }
 
 
@@ -577,8 +796,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/config":
                 json_response(self, 200, {"base_url": setting("base_url", "https://api.openai.com/v1"), "model": setting("model", "gpt-4.1-mini"), "embedding_model": setting("embedding_model"), "has_key": bool(setting("api_key"))})
             elif self.path == "/api/connections":
-                rows = connection.execute("SELECT id,name,base_url,provider_type,provider_id,purpose,enabled,updated_at,api_key FROM provider_connections ORDER BY updated_at DESC").fetchall()
-                json_response(self, 200, {"connections": [{**dict(row), "api_key": "", "has_key": bool(row["api_key"]), "key_fingerprint": hashlib.sha256(row["api_key"].encode()).hexdigest()[:8].upper() if row["api_key"] else ""} for row in rows]})
+                rows = connection.execute("SELECT id,name,base_url,provider_type,provider_id,purpose,model_ids,enabled,updated_at,api_key FROM provider_connections ORDER BY updated_at DESC").fetchall()
+                items = []
+                for row in rows:
+                    item = {**dict(row), "api_key": "", "model_ids": parse_model_ids(row["model_ids"]), "has_key": bool(row["api_key"]), "key_fingerprint": hashlib.sha256(row["api_key"].encode()).hexdigest()[:8].upper() if row["api_key"] else ""}
+                    items.append(item)
+                json_response(self, 200, {"connections": items})
             elif self.path == "/api/models":
                 rows = connection.execute("SELECT * FROM models ORDER BY pinned DESC,sort_order,name").fetchall()
                 json_response(self, 200, {"models": [dict(row) for row in rows if self.can_access_model(row)]})
@@ -674,12 +897,20 @@ class Handler(BaseHTTPRequestHandler):
                 provider_type = str(data.get("provider_type", "openai")).strip().lower()
                 if provider_type not in ("openai", "ollama", "pipeline"): provider_type = "openai"
                 provider_id = str(data.get("provider_id", "custom")).strip().lower() or "custom"
+                model_ids = parse_model_ids(data.get("model_ids", []))
                 purpose = str(data.get("purpose", "general")).strip().lower()
                 if purpose not in ("general", "chat", "image", "audio"): purpose = "general"
                 if not api_key and provider_type != "ollama": raise ValueError("API Key 不能为空")
-                connection.execute("INSERT INTO provider_connections(id,name,base_url,api_key,enabled,provider_type,provider_id,purpose,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,api_key=excluded.api_key,enabled=excluded.enabled,provider_type=excluded.provider_type,provider_id=excluded.provider_id,purpose=excluded.purpose,updated_at=excluded.updated_at", (item_id, name, base_url, api_key, 1 if data.get("enabled", True) else 0, provider_type, provider_id, purpose, now))
-                connection.commit(); result = sync_provider_models(connection, now, item_id)
-                json_response(self, 200, {"ok": True, "id": item_id, "sync": result})
+                connection.execute("INSERT INTO provider_connections(id,name,base_url,api_key,enabled,provider_type,provider_id,purpose,model_ids,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,api_key=excluded.api_key,enabled=excluded.enabled,provider_type=excluded.provider_type,provider_id=excluded.provider_id,purpose=excluded.purpose,model_ids=excluded.model_ids,updated_at=excluded.updated_at", (item_id, name, base_url, api_key, 1 if data.get("enabled", True) else 0, provider_type, provider_id, purpose, json.dumps(model_ids, ensure_ascii=False), now))
+                connection.commit()
+                result = {"total": 0, "added": 0, "removed": 0}
+                sync_error = ""
+                if data.get("sync_models", True):
+                    try:
+                        result = sync_provider_models(connection, now, item_id)
+                    except Exception as error:
+                        sync_error = str(error)
+                json_response(self, 200, {"ok": True, "id": item_id, "sync": result, "sync_error": sync_error})
             elif self.path == "/api/connections/delete":
                 item_id = str(data.get("id", "")); connection.execute("DELETE FROM models WHERE connection_id=?", (item_id,)); connection.execute("DELETE FROM provider_connections WHERE id=?", (item_id,)); connection.commit(); json_response(self, 200, {"ok": True})
             elif self.path == "/api/connections/sync":
@@ -759,13 +990,17 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/models":
                 name = str(data.get("name", "")).strip(); base_model = str(data.get("base_model", "")).strip()
                 if not name or not base_model: raise ValueError("模型名称和基础模型不能为空")
+                connection_id = str(data.get("connection_id", ""))
+                if connection_id and not connection.execute("SELECT 1 FROM provider_connections WHERE id=?", (connection_id,)).fetchone():
+                    raise ValueError("所属账号连接不存在")
                 item_id = "model-" + hashlib.sha256(f"{name}:{now}".encode()).hexdigest()[:20]
                 capabilities = json.dumps(data.get("capabilities", ["knowledge"]), ensure_ascii=False)
                 temperature = max(0, min(float(data.get("temperature", 0.7)), 2)); top_p = max(0, min(float(data.get("top_p", 1)), 1)); max_tokens = max(1, min(int(data.get("max_tokens", 2048)), 128000))
                 enabled = 1 if data.get("enabled", True) else 0; hidden = 1 if data.get("hidden", False) else 0; pinned = 1 if data.get("pinned", False) else 0; is_default = 1 if data.get("is_default", False) else 0
                 if is_default: connection.execute("UPDATE models SET is_default=0")
                 owner_id = self.identity()[0]
-                connection.execute("INSERT INTO models(id,name,base_model,description,system_prompt,capabilities,updated_at,temperature,top_p,max_tokens,knowledge_id,skill_ids,tool_ids,connection_id,enabled,hidden,pinned,is_default,tags,sort_order,owner_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, name, base_model, str(data.get("description", "")), str(data.get("system_prompt", "")), capabilities, now, temperature, top_p, max_tokens, str(data.get("knowledge_id", "")), json.dumps(data.get("skill_ids", [])), json.dumps(data.get("tool_ids", [])), str(data.get("connection_id", "")), enabled, hidden, pinned, is_default, json.dumps(data.get("tags", []), ensure_ascii=False), int(data.get("sort_order", 0)), owner_id))
+                connection.execute("INSERT INTO models(id,name,base_model,description,system_prompt,capabilities,updated_at,temperature,top_p,max_tokens,knowledge_id,skill_ids,tool_ids,connection_id,enabled,hidden,pinned,is_default,tags,sort_order,owner_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, name, base_model, str(data.get("description", "")), str(data.get("system_prompt", "")), capabilities, now, temperature, top_p, max_tokens, str(data.get("knowledge_id", "")), json.dumps(data.get("skill_ids", [])), json.dumps(data.get("tool_ids", [])), connection_id, enabled, hidden, pinned, is_default, json.dumps(data.get("tags", []), ensure_ascii=False), int(data.get("sort_order", 0)), owner_id))
+                connection.execute("UPDATE models SET provider_id=COALESCE((SELECT provider_id FROM provider_connections WHERE id=?),provider_id) WHERE id=?", (connection_id, item_id))
                 connection.execute("UPDATE models SET model_type=?,input_price=?,output_price=? WHERE id=?", (str(data.get("model_type") or infer_model_type(base_model)), max(0, float(data.get("input_price", 0))), max(0, float(data.get("output_price", 0))), item_id)); connection.commit(); json_response(self, 201, {"ok": True, "id": item_id})
             elif self.path == "/api/models/sync":
                 result = sync_enabled_provider_models(connection, now)
@@ -780,7 +1015,10 @@ class Handler(BaseHTTPRequestHandler):
                 enabled = 1 if data.get("enabled", True) else 0; hidden = 1 if data.get("hidden", False) else 0; pinned = 1 if data.get("pinned", False) else 0; is_default = 1 if data.get("is_default", False) else 0
                 if is_default: connection.execute("UPDATE models SET is_default=0")
                 capabilities = json.dumps(data.get("capabilities", []), ensure_ascii=False)
-                connection.execute("UPDATE models SET name=?,base_model=?,description=?,system_prompt=?,capabilities=?,temperature=?,top_p=?,max_tokens=?,knowledge_id=?,skill_ids=?,tool_ids=?,enabled=?,hidden=?,pinned=?,is_default=?,tags=?,sort_order=?,access=?,access_grants=?,filters=?,actions=?,updated_at=? WHERE id=?", (name, base_model, str(data.get("description", "")), str(data.get("system_prompt", "")), capabilities, temperature, top_p, max_tokens, str(data.get("knowledge_id", "")), json.dumps(data.get("skill_ids", [])), json.dumps(data.get("tool_ids", [])), enabled, hidden, pinned, is_default, json.dumps(data.get("tags", []), ensure_ascii=False), int(data.get("sort_order", 0)), str(data.get("access", "private")), json.dumps(data.get("access_grants", []), ensure_ascii=False), json.dumps(data.get("filters", []), ensure_ascii=False), json.dumps(data.get("actions", []), ensure_ascii=False), now, item_id))
+                connection_id = str(data.get("connection_id", ""))
+                if connection_id and not connection.execute("SELECT 1 FROM provider_connections WHERE id=?", (connection_id,)).fetchone():
+                    raise ValueError("所属账号连接不存在")
+                connection.execute("UPDATE models SET name=?,base_model=?,description=?,system_prompt=?,capabilities=?,temperature=?,top_p=?,max_tokens=?,knowledge_id=?,skill_ids=?,tool_ids=?,connection_id=?,provider_id=COALESCE((SELECT provider_id FROM provider_connections WHERE id=?),provider_id),enabled=?,hidden=?,pinned=?,is_default=?,tags=?,sort_order=?,access=?,access_grants=?,filters=?,actions=?,updated_at=? WHERE id=?", (name, base_model, str(data.get("description", "")), str(data.get("system_prompt", "")), capabilities, temperature, top_p, max_tokens, str(data.get("knowledge_id", "")), json.dumps(data.get("skill_ids", [])), json.dumps(data.get("tool_ids", [])), connection_id, connection_id, enabled, hidden, pinned, is_default, json.dumps(data.get("tags", []), ensure_ascii=False), int(data.get("sort_order", 0)), str(data.get("access", "private")), json.dumps(data.get("access_grants", []), ensure_ascii=False), json.dumps(data.get("filters", []), ensure_ascii=False), json.dumps(data.get("actions", []), ensure_ascii=False), now, item_id))
                 connection.execute("UPDATE models SET model_type=?,input_price=?,output_price=? WHERE id=?", (str(data.get("model_type") or infer_model_type(base_model)), max(0, float(data.get("input_price", 0))), max(0, float(data.get("output_price", 0))), item_id)); connection.commit(); json_response(self, 200, {"ok": True, "id": item_id, "enabled": bool(enabled)})
             elif self.path == "/api/tools":
                 name, description, kind = str(data.get("name", "")).strip(), str(data.get("description", "")).strip(), str(data.get("kind", "custom")).strip()
@@ -942,10 +1180,26 @@ class Handler(BaseHTTPRequestHandler):
                 documents = web_search(search_query, max(1, min(int(data.get("limit", 6)), 10)))
                 if site: documents = [item for item in documents if site.lower() in urllib.parse.urlparse(item.get("url", "")).netloc.lower()]
                 record_usage(connection, self.identity()[0], "", "web_search", request_started); json_response(self, 200, {"documents": documents, "query": search_query})
+            elif self.path == "/api/web-pages/read":
+                page = read_public_web_page(data.get("url", ""))
+                record_usage(connection, self.identity()[0], "", "web_page_read", request_started); json_response(self, 200, {"page": page})
             elif self.path == "/api/chat/stream":
                 if not setting("api_key") and not connection.execute("SELECT 1 FROM provider_connections WHERE enabled=1 AND api_key<>'' LIMIT 1").fetchone():
                     raise ValueError("请先在模型设置中配置 API Key")
+                request_messages = data.get("messages", []) if isinstance(data.get("messages", []), list) else []
+                request_history = data.get("history", []) if isinstance(data.get("history", []), list) else []
                 question = str(data.get("question", "")).strip(); selected_model = None
+                if request_messages:
+                    last_message = request_messages[-1] if isinstance(request_messages[-1], dict) else {}
+                    if str(last_message.get("role", "")).strip().lower() == "user":
+                        question = message_text(last_message.get("content", "")) or question
+                    request_history = request_messages[:-1]
+                chat_id = str(data.get("chat_id", "")).strip()
+                history = conversation_messages(connection, self.identity()[0], chat_id, request_history)
+                if not question and history:
+                    question = message_text(history[-1].get("content", ""))
+                if not question:
+                    raise ValueError("问题不能为空")
                 if data.get("model_id"):
                     selected_model = connection.execute("SELECT * FROM models WHERE id=?", (str(data.get("model_id")),)).fetchone()
                     if selected_model and not self.can_access_model(selected_model): raise ValueError("无权使用该模型")
@@ -958,6 +1212,7 @@ class Handler(BaseHTTPRequestHandler):
                 filters, actions = model_runtime_config(selected_model)
                 question = apply_input_filters(question, filters)
                 documents = data.get("documents", []) if isinstance(data.get("documents", []), list) else []
+                documents = documents + file_documents(connection, data.get("file_ids", []))
                 context = "\n\n".join(f"[{index + 1}] {item.get('title', '')}\n{item.get('content', '')}" for index, item in enumerate(documents[:8]) if isinstance(item, dict))
                 messages = []
                 memories = connection.execute("SELECT content FROM ai_memories WHERE user_id=? AND enabled=1 ORDER BY updated_at DESC LIMIT 20", (self.identity()[0],)).fetchall()
@@ -971,6 +1226,7 @@ class Handler(BaseHTTPRequestHandler):
                 tool_output = run_tools(connection, [str(item) for item in data.get("tool_ids", [])] if isinstance(data.get("tool_ids", []), list) else [], question)
                 if tool_output: messages.append({"role": "system", "content": "以下是已执行工具的可信结果：\n\n" + tool_output})
                 if context: messages.append({"role": "system", "content": "请优先根据以下资料回答，并标注来源编号。\n\n" + context[:20000]})
+                messages.extend(history)
                 image_urls = [str(item) for item in data.get("image_urls", []) if str(item).startswith(("data:image/", "https://", "http://"))][:4] if isinstance(data.get("image_urls", []), list) else []
                 user_content = [{"type": "text", "text": question}] + [{"type": "image_url", "image_url": {"url": url}} for url in image_urls] if image_urls else question
                 messages.append({"role": "user", "content": user_content})
@@ -978,6 +1234,7 @@ class Handler(BaseHTTPRequestHandler):
                 if selected_model: payload.update({"temperature": selected_model["temperature"], "top_p": selected_model["top_p"], "max_tokens": selected_model["max_tokens"]})
                 provider = connection.execute("SELECT * FROM provider_connections WHERE id=? AND enabled=1", (selected_model["connection_id"],)).fetchone() if selected_model and selected_model["connection_id"] else None
                 provider_type = provider["provider_type"] if provider and "provider_type" in provider.keys() else "openai"
+                provider_id = str(provider["provider_id"] if provider and "provider_id" in provider.keys() else "custom").lower()
                 provider_base = provider_api_base(provider["base_url"] if provider else setting("base_url", "https://api.openai.com/v1"), provider_type)
                 endpoint = provider_base + ("/api/chat" if provider_type == "ollama" else "/chat/completions")
                 api_key = provider["api_key"] if provider else setting("api_key")
@@ -1026,7 +1283,7 @@ class Handler(BaseHTTPRequestHandler):
                     if answer:
                         write_single_answer(answer)
                         return
-                    if provider_type != "ollama" and upstream_error.code in (400, 404, 405, 422, 500, 502, 503):
+                    if provider_type != "ollama" and provider_id != "google" and upstream_error.code in (400, 404, 405, 422, 500, 502, 503):
                         fallback_endpoint = provider_base + "/responses"
                         fallback_payload = {"model": payload["model"], "input": payload["messages"], "stream": True}
                         fallback_request = urllib.request.Request(fallback_endpoint, data=json.dumps(fallback_payload).encode(), headers=headers, method="POST")
@@ -1035,22 +1292,33 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         raise
 
+                stream_meta = {"usage": {}}
+
                 def upstream_chunks(upstream_response):
                     for raw_line in upstream_response:
                         line = raw_line.decode("utf-8", errors="replace").strip()
-                        if not line.startswith("data:"): continue
-                        value = line[5:].strip()
+                        if line.startswith("data:"):
+                            value = line[5:].strip()
+                        elif line.startswith("{") or line.startswith("["):
+                            # Ollama and a few gateways stream newline-delimited JSON.
+                            value = line
+                        else:
+                            continue
                         if value == "[DONE]": break
                         try:
                             event = json.loads(value)
-                            chunk = event.get("choices", [{}])[0].get("delta", {}).get("content", "") or event.get("delta", "") or event.get("response", {}).get("output_text", "")
-                        except (json.JSONDecodeError, IndexError): chunk = ""
+                            usage = upstream_event_usage(event)
+                            if usage:
+                                stream_meta["usage"] = usage
+                            chunk = upstream_event_value(event)
+                        except (json.JSONDecodeError, IndexError, TypeError):
+                            chunk = ""
                         if chunk:
                             yield chunk
 
                 chunks = upstream_chunks(response)
                 first_chunk = next(chunks, None)
-                if first_chunk is None and provider_type != "ollama" and not used_responses:
+                if first_chunk is None and provider_type != "ollama" and provider_id != "google" and not used_responses:
                     response.close()
                     try:
                         answer = non_stream_answer()
@@ -1072,11 +1340,23 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write((json.dumps({"content": first_chunk}, ensure_ascii=False) + "\n").encode("utf-8")); self.wfile.flush()
                     for chunk in chunks:
                         self.wfile.write((json.dumps({"content": chunk}, ensure_ascii=False) + "\n").encode("utf-8")); self.wfile.flush()
-                record_usage(connection, self.identity()[0], selected_model["id"] if selected_model else "", "chat_stream", request_started)
+                record_usage(connection, self.identity()[0], selected_model["id"] if selected_model else "", "chat_stream", request_started, usage=stream_meta["usage"], cost=usage_cost(selected_model, stream_meta["usage"]))
             elif self.path == "/api/chat":
                 if not setting("api_key") and not connection.execute("SELECT 1 FROM provider_connections WHERE enabled=1 AND api_key<>'' LIMIT 1").fetchone():
                     raise ValueError("请先在模型设置中配置 API Key")
+                request_messages = data.get("messages", []) if isinstance(data.get("messages", []), list) else []
+                request_history = data.get("history", []) if isinstance(data.get("history", []), list) else []
                 question = str(data.get("question", "")).strip()
+                if request_messages:
+                    last_message = request_messages[-1] if isinstance(request_messages[-1], dict) else {}
+                    if str(last_message.get("role", "")).strip().lower() == "user":
+                        question = message_text(last_message.get("content", "")) or question
+                    request_history = request_messages[:-1]
+                history = conversation_messages(connection, self.identity()[0], str(data.get("chat_id", "")).strip(), request_history)
+                if not question and history:
+                    question = message_text(history[-1].get("content", ""))
+                if not question:
+                    raise ValueError("问题不能为空")
                 selected_model = None
                 if data.get("model_id"):
                     selected_model = connection.execute("SELECT * FROM models WHERE id=?", (str(data.get("model_id")),)).fetchone()
@@ -1090,6 +1370,7 @@ class Handler(BaseHTTPRequestHandler):
                 filters, actions = model_runtime_config(selected_model)
                 question = apply_input_filters(question, filters)
                 documents = data.get("documents", []) if isinstance(data.get("documents", []), list) else []
+                documents = documents + file_documents(connection, data.get("file_ids", []))
                 context = "\n\n".join(f"[{index + 1}] {item.get('title', '')}\n{item.get('content', '')}" for index, item in enumerate(documents[:8]) if isinstance(item, dict))
                 messages = []
                 memories = connection.execute("SELECT content FROM ai_memories WHERE user_id=? AND enabled=1 ORDER BY updated_at DESC LIMIT 20", (self.identity()[0],)).fetchall()
@@ -1106,6 +1387,7 @@ class Handler(BaseHTTPRequestHandler):
                 if tool_output: messages.append({"role": "system", "content": "以下是已执行工具的可信结果：\n\n" + tool_output})
                 if context:
                     messages.append({"role": "system", "content": "请优先根据以下资料回答，并在引用时标注来源编号。\n\n" + context[:20000]})
+                messages.extend(history)
                 image_urls = [str(item) for item in data.get("image_urls", []) if str(item).startswith(("data:image/", "https://", "http://"))][:4] if isinstance(data.get("image_urls", []), list) else []
                 user_content = [{"type": "text", "text": question}] + [{"type": "image_url", "image_url": {"url": url}} for url in image_urls] if image_urls else question
                 messages.append({"role": "user", "content": user_content})

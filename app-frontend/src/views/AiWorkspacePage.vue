@@ -17,7 +17,8 @@ import PageHeader from "../components/PageHeader.vue";
 import AppDialog from "../components/AppDialog.vue";
 import { session } from "../session";
 
-type Message = { id: string; role: "user" | "assistant"; content: string; imageUrl?: string; imageUrls?: string[] };
+type Source = { id: string; title: string; url?: string; content?: string };
+type Message = { id: string; role: "user" | "assistant"; content: string; imageUrl?: string; imageUrls?: string[]; fileIds?: string[]; sources?: Source[] };
 type Chat = { id: string; title: string; messages: Message[]; createdAt: number; updatedAt: number; modelId?: string; favorite?: boolean; archived?: boolean; folder?: string };
 type Option = { id: string; name: string; model_type?: string; enabled?: number; hidden?: number; knowledge_id?: string; skill_ids?: string; tool_ids?: string };
 
@@ -32,6 +33,7 @@ const useWebSearch = ref(false);
 const imageMode = ref(false);
 const imageSize = ref("1024x1024");
 const pendingImages = ref<string[]>([]);
+const pendingFileIds = ref<string[]>([]);
 const toolsOpen = ref(false);
 const recording = ref(false);
 const uploading = ref(false);
@@ -90,6 +92,9 @@ watch(useKnowledge, (v) => localStorage.setItem("ruoshop-app-ai-use-knowledge", 
 
 function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`; }
 function renderMarkdown(value: string) { return md.render(value || ""); }
+function openSource(source: Source) {
+  if (source.url) window.open(source.url, "_blank", "noopener,noreferrer");
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/ai-api/${path}`, {
@@ -201,7 +206,7 @@ function restoreModel() {
   selectedModelId.value = models.value.some((m) => m.id === remembered) ? remembered : models.value[0]?.id || "";
 }
 
-watch(activeId, () => { restoreModel(); void scrollBottom(0); });
+watch(activeId, () => { pendingImages.value = []; pendingFileIds.value = []; restoreModel(); void scrollBottom(0); });
 watch(selectedModelId, (id) => {
   localStorage.setItem(`${storageKey.value}:selected-model`, id);
   if (activeChat.value && activeChat.value.modelId !== id) { activeChat.value.modelId = id; save(); }
@@ -217,8 +222,9 @@ async function scrollBottom(duration = 200) { await nextTick(); await contentRef
 async function send(text = prompt.value) {
   const question = text.trim(); const chat = activeChat.value;
   if (!question || !chat || sending.value) return;
-  const attachedImages = [...pendingImages.value]; pendingImages.value = []; prompt.value = "";
-  chat.messages.push({ id: `user-${uid()}`, role: "user", content: question, imageUrls: attachedImages });
+  const attachedImages = [...pendingImages.value]; pendingImages.value = [];
+  const attachedFileIds = [...pendingFileIds.value]; pendingFileIds.value = []; prompt.value = "";
+  chat.messages.push({ id: `user-${uid()}`, role: "user", content: question, imageUrls: attachedImages, fileIds: attachedFileIds });
   if (chat.messages.length === 1) chat.title = question.slice(0, 20);
   sending.value = true; save(); await scrollBottom();
   toolsOpen.value = false;
@@ -229,24 +235,41 @@ async function send(text = prompt.value) {
       const result = await api<{ url: string }>("images/generations", { method: "POST", body: JSON.stringify({ prompt: question, model_id: selectedModelId.value || undefined, size: imageSize.value }) });
       assistant.content = ""; assistant.imageUrl = result.url; return;
     }
-    let documents: unknown[] = [];
+    let documents: Source[] = [];
     const searchAbort = new AbortController();
     activeRequest.value = searchAbort;
     if (useKnowledge.value) {
-      const result = await api<{ documents: unknown[] }>("search", { method: "POST", body: JSON.stringify({ query: question, limit: 5, knowledge_id: selectedKnowledgeId.value || undefined }) });
+        const result = await api<{ documents: Source[] }>("search", { method: "POST", body: JSON.stringify({ query: question, limit: 5, knowledge_id: selectedKnowledgeId.value || undefined }) });
       documents = result.documents || [];
     }
     if (useWebSearch.value) {
-      try { const result = await api<{ documents: unknown[] }>("web-search", { method: "POST", body: JSON.stringify({ query: question, limit: 5 }) }); documents.push(...(result.documents || [])); } catch {}
+      try { const result = await api<{ documents: Source[] }>("web-search", { method: "POST", body: JSON.stringify({ query: question, limit: 5 }) }); documents.push(...(result.documents || [])); } catch {}
     }
-    const assistant: Message = { id: `assistant-${uid()}`, role: "assistant", content: "" };
+    const pageUrl = question.match(/https?:\/\/[^\s<>]+/i)?.[0]?.replace(/[),.;!?]+$/, "");
+    if (pageUrl) {
+      try {
+        const result = await api<{ page?: Source }>("web-pages/read", { method: "POST", body: JSON.stringify({ url: pageUrl }) });
+        if (result.page) documents.push(result.page);
+      } catch (error) { await notify(error instanceof Error ? `网页读取失败：${error.message}` : "网页读取失败", "warning"); }
+    }
+    const assistant: Message = { id: `assistant-${uid()}`, role: "assistant", content: "", sources: documents };
     chat.messages.push(assistant);
     activeRequest.value = new AbortController();
     const response = await fetch("/ai-api/chat/stream", {
       method: "POST", credentials: "include",
       headers: { "Content-Type": "application/json", "X-Workspace-User": userId.value, "X-Workspace-Role": session.user?.role || "user" },
       signal: activeRequest.value.signal,
-      body: JSON.stringify({ question, image_urls: attachedImages, documents, model_id: selectedModelId.value || undefined, skill_ids: selectedSkillIds.value, tool_ids: selectedToolIds.value }),
+      body: JSON.stringify({
+        chat_id: chat.id,
+        messages: chat.messages.slice(0, -1).map(({ role, content, imageUrls, fileIds }) => ({ role, content, imageUrls, fileIds })),
+        question,
+        image_urls: attachedImages,
+        file_ids: attachedFileIds,
+        documents,
+        model_id: selectedModelId.value || undefined,
+        skill_ids: selectedSkillIds.value,
+        tool_ids: selectedToolIds.value,
+      }),
     });
     if (!response.ok) { const d = await response.json().catch(() => ({})); throw new Error(d.error || `请求失败（${response.status}）`); }
     const reader = response.body?.getReader(); const decoder = new TextDecoder(); let buffer = "";
@@ -346,7 +369,8 @@ async function importFiles(event: Event) {
     for (const file of files) {
       if (file.size > 15_000_000) throw new Error(`${file.name} 超过 15MB`);
       const data = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "").split(",", 2)[1] || ""); r.onerror = () => reject(new Error(`${file.name} 读取失败`)); r.readAsDataURL(file); });
-      await api("documents/import-file", { method: "POST", body: JSON.stringify({ title: file.name.replace(/\.[^.]+$/, ""), filename: file.name, data }) });
+      const importedFile = await api<{ file?: { id?: string } }>("documents/import-file", { method: "POST", body: JSON.stringify({ title: file.name.replace(/\.[^.]+$/, ""), filename: file.name, data }) });
+      if (importedFile.file?.id) pendingFileIds.value.push(String(importedFile.file.id));
     }
     useKnowledge.value = true; await notify(`已导入 ${files.length} 个文件`);
   } catch (e) { await notify(e instanceof Error ? e.message : "文件导入失败", "danger"); }
@@ -444,6 +468,13 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
             </div>
             <div v-else-if="msg.role === 'assistant'" class="ai-card">
               <div class="md" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="msg.sources?.length" class="message-sources">
+                <b>引用来源</b>
+                <button v-for="(source, index) in msg.sources" :key="source.id || source.url || index" type="button" @click="openSource(source)">
+                  <span>[{{ index + 1 }}] {{ source.title }}</span>
+                  <small v-if="source.url">{{ source.url }}</small>
+                </button>
+              </div>
               <div class="turn-actions">
                 <button @click="copy(msg.content)"><IonIcon :icon="copyOutline" />复制</button>
                 <button @click="saveAsNote(msg)"><IonIcon :icon="documentOutline" />Notes</button>
@@ -631,6 +662,10 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 .md :deep(pre code) { padding: 0; background: transparent; }
 .md :deep(table) { display: block; overflow: auto; border-collapse: collapse; font-size: 11px; }
 .md :deep(th), .md :deep(td) { padding: 6px; border: 1px solid var(--app-line); }
+.message-sources { display: grid; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--app-line); }
+.message-sources > b { font-size: 11px; }
+.message-sources button { display: grid; gap: 2px; padding: 7px 0; border: 0; text-align: left; color: var(--app-blue); background: transparent; font-size: 11px; }
+.message-sources button small { overflow-wrap: anywhere; color: var(--app-muted); font-size: 10px; }
 
 /* ── History ── */
 .link-action { display: flex; align-items: center; gap: 3px; border: 0; color: var(--app-blue); background: transparent; font-size: 11px; }

@@ -71,6 +71,24 @@ class WorkspaceApiTest(unittest.TestCase):
         self.request("skills/delete", {"id": skill_id})
         self.request("knowledge/delete", {"id": knowledge_id})
 
+    def test_conversation_history_is_loaded_for_owner_only(self):
+        self.request("chats/save", {
+            "id": "memory-chat",
+            "title": "记忆测试",
+            "messages": [
+                {"role": "user", "content": "我想做一个翻译网站"},
+                {"role": "assistant", "content": "可以先设计翻译页面。"},
+                {"role": "assistant", "content": "失败回答", "status": "failed"},
+            ],
+        })
+        connection = server.db()
+        try:
+            history = server.conversation_messages(connection, "local", "memory-chat", [])
+            self.assertEqual([item["role"] for item in history], ["user", "assistant"])
+            self.assertIn("翻译网站", history[0]["content"])
+            self.assertEqual(server.conversation_messages(connection, "other-user", "memory-chat", [{"role": "user", "content": "备用上下文"}])[0]["content"], "备用上下文")
+        finally:
+            connection.close()
     def test_builtin_calculator(self):
         result = server.calculate_expression("请计算 12+8 和 10/4")
         self.assertIn("12+8 = 20", result)
