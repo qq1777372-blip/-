@@ -1,3 +1,5 @@
+import MarkdownIt from 'markdown-it'
+
 // Shared between the article editor preview and the reader page so what an
 // author previews is exactly what a reader gets.
 export type InlineSegment = { type: 'text' | 'link'; value: string; label?: string }
@@ -78,6 +80,24 @@ export function parseContent(value?: string, imageAltFallback = '配图') {
   }
   flush()
   return blocks
+}
+
+const markdownRenderer = new MarkdownIt({ html: false, breaks: true, linkify: true, typographer: false })
+const alignBlockPattern = /::: +(align-(left|center|right))\s*\n([\s\S]*?)\n:::/g
+
+export function renderMarkdown(value?: string) {
+  const normalized = String(value || '').trim()
+  if (!normalized) return ''
+  let lastIndex = 0
+  let rendered = ''
+  for (const match of normalized.matchAll(alignBlockPattern)) {
+    const index = match.index || 0
+    if (index > lastIndex) rendered += markdownRenderer.render(normalized.slice(lastIndex, index))
+    rendered += `<div class="saved-link-${match[1]}">${markdownRenderer.render(match[3] || '')}</div>`
+    lastIndex = index + match[0].length
+  }
+  if (lastIndex < normalized.length) rendered += markdownRenderer.render(normalized.slice(lastIndex))
+  return rendered || markdownRenderer.render(normalized)
 }
 
 // One-line summary for list rows: the words, without any of the markup.

@@ -403,7 +403,12 @@ async function toggleRecording() {
       const actualMime = mediaRecorder?.mimeType || mime || "audio/webm";
       const blob = new Blob(chunks, { type: actualMime });
       const data = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "").split(",", 2)[1] || ""); r.onerror = () => reject(new Error("读取失败")); r.readAsDataURL(blob); });
-      try { const result = await api<{ text: string }>("audio/transcriptions", { method: "POST", body: JSON.stringify({ filename: `recording.${recordingExtension(actualMime)}`, data, model_id: selectedAudioModelId.value || undefined }) }); prompt.value = [prompt.value, result.text].filter(Boolean).join(" "); }
+      try {
+        const result = await api<{ text: string }>("audio/transcriptions", { method: "POST", body: JSON.stringify({ filename: `recording.${recordingExtension(actualMime)}`, data, model_id: selectedAudioModelId.value || undefined }) });
+        const text = [prompt.value, result.text].filter(Boolean).join(" ").trim();
+        prompt.value = "";
+        if (text) await send(text);
+      }
       catch (e) { await notify(e instanceof Error ? e.message : "语音转写失败", "danger"); }
     };
     mediaRecorder.start(); recording.value = true;

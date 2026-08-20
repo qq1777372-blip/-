@@ -1091,7 +1091,9 @@ async function toggleRecording() {
             body: JSON.stringify({ filename: `recording.${recordingExtension(actualMime)}`, data }),
           },
         );
-        prompt.value = [prompt.value, result.text].filter(Boolean).join(" ");
+        const text = [prompt.value, result.text].filter(Boolean).join(" ").trim();
+        prompt.value = "";
+        if (text) await sendPrompt(text);
       } catch (error) {
         ElMessage.error(
           error instanceof Error ? error.message : "语音转写失败",

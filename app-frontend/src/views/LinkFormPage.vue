@@ -5,7 +5,7 @@ import { closeOutline, imageOutline } from 'ionicons/icons'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { api, ApiError } from '../api'
-import { firstUrl, normalizePath, parseContent } from '../markdown'
+import { firstUrl, normalizePath, parseContent, renderMarkdown } from '../markdown'
 import type { SavedLink } from './LinkPlazaPage.vue'
 
 type StoredImage = { url: string; name?: string; storage_name: string }
@@ -19,7 +19,7 @@ const id = computed(() => (route.params.id ? Number(route.params.id) : 0))
 const articleMode = computed(() => route.path.startsWith('/tabs/form/articles'))
 const saving = ref(false)
 const loading = ref(true)
-const mode = ref<'write' | 'preview'>('write')
+const mode = ref<'write' | 'split' | 'preview'>('write')
 const body = ref<HTMLTextAreaElement | null>(null)
 const inlinePicker = ref<HTMLInputElement | null>(null)
 // Inline images picked before the record exists. They live as blob: URLs in the
@@ -43,13 +43,20 @@ const tools = [
   { label: 'H1', hint: '一级标题', apply: () => linePrefix('# ') },
   { label: 'H2', hint: '二级标题', apply: () => linePrefix('## ') },
   { label: '粗体', hint: '加粗', apply: () => wrap('**', '**') },
+  { label: '斜体', hint: '斜体', apply: () => wrap('*', '*') },
   { label: '引用', hint: '引用', apply: () => linePrefix('> ') },
   { label: '列表', hint: '无序列表', apply: () => linePrefix('- ') },
+  { label: '编号', hint: '有序列表', apply: () => orderedList() },
   { label: '链接', hint: '插入链接', apply: () => wrap('[', '](https://)') },
+  { label: '行内码', hint: '行内代码', apply: () => wrap('`', '`') },
+  { label: '代码块', hint: '代码块', apply: () => insertCodeBlock() },
+  { label: '表格', hint: '插入表格', apply: () => insertTable() },
+  { label: '分割线', hint: '分割线', apply: () => insertSnippet('\n---\n') },
   { label: '居中', hint: '居中对齐', apply: () => block('::: align-center', ':::') },
 ]
 
 const blocks = computed(() => parseContent(form.description, form.title || '配图'))
+const previewHtml = computed(() => renderMarkdown(form.description))
 const keptImages = computed(() => form.existingImages.filter((image) => !removed.value.includes(image.storage_name)))
 // Images already placed in the body are managed there, so only the leftovers
 // need a management strip. Older articles can have unreferenced images.
@@ -126,6 +133,34 @@ function linePrefix(prefix: string) {
       end: end + prefix.length,
     }
   })
+}
+
+function orderedList() {
+  edit((text, start, end) => {
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1
+    const lineEnd = text.indexOf('\n', end) === -1 ? text.length : text.indexOf('\n', end)
+    const lines = text.slice(lineStart, lineEnd).split('\n')
+    const nextNumber = () => {
+      const previousLines = text.slice(0, start).split('\n').reverse()
+      const previous = previousLines.find((line) => /^\s*\d+\.\s+/.test(line))
+      return previous ? Number(previous.match(/^\s*(\d+)/)?.[1] || 0) + 1 : 1
+    }
+    const base = start === end ? nextNumber() : 1
+    const replacement = lines.map((line, index) => `${base + index}. ${line.replace(/^\s*\d+\.\s+/, '').trim() || `列表项 ${base + index}`}`).join('\n')
+    return { text: `${text.slice(0, lineStart)}${replacement}${text.slice(lineEnd)}`, start: lineStart, end: lineStart + replacement.length }
+  })
+}
+
+function insertSnippet(snippet: string) {
+  edit((text, start) => ({ text: `${text.slice(0, start)}${snippet}${text.slice(start)}`, start: start + snippet.length, end: start + snippet.length }))
+}
+
+function insertCodeBlock() {
+  insertSnippet('\n```text\n在这里填写代码\n```\n')
+}
+
+function insertTable() {
+  insertSnippet('\n| 列 1 | 列 2 |\n| --- | --- |\n| 内容 1 | 内容 2 |\n')
 }
 
 function block(open: string, close: string) {
@@ -247,7 +282,7 @@ function buildPayload(description: string) {
     // Article links are derived from the body; skip blob: refs so a pending
     // image never becomes the article's primary URL.
     url: articleMode.value ? firstUrl(description.replace(/blob:\S+/g, '')) : form.url.trim() || null,
-    is_pinned: articleMode.value ? false : form.is_pinned,
+    is_pinned: form.is_pinned,
     sort_order: Number(form.sort_order || 0),
   }
 }
@@ -360,13 +395,14 @@ onUnmounted(() => {
           <input v-model="form.title" class="editor-title" :class="{ 'is-missing': !form.title.trim() }" maxlength="100" :placeholder="articleMode ? '文章标题' : '帖子标题'">
           <div class="editor-meta-row">
             <input v-model="form.category" maxlength="50" :placeholder="articleMode ? '分类，例如：店铺教程' : '分类，例如：工作安排'">
-            <input v-if="!articleMode" v-model.number="form.sort_order" type="number" inputmode="numeric" min="0" max="9999" placeholder="排序">
+            <input v-model.number="form.sort_order" type="number" inputmode="numeric" min="0" max="9999" placeholder="排序">
           </div>
         </section>
 
         <section class="editor-shell">
           <div class="editor-modes">
             <button :class="{ active: mode === 'write' }" @click="mode = 'write'">编辑</button>
+            <button :class="{ active: mode === 'split' }" @click="mode = 'split'">分栏</button>
             <button :class="{ active: mode === 'preview' }" @click="mode = 'preview'">预览</button>
           </div>
           <div v-show="mode === 'write'" class="editor-toolbar">
@@ -376,24 +412,16 @@ onUnmounted(() => {
             </button>
           </div>
           <textarea
-            v-show="mode === 'write'"
+            v-show="mode !== 'preview'"
             ref="body"
             v-model="form.description"
             class="editor-body"
             :placeholder="articleMode ? '从这里开始写正文。点上方“图片”把图插进当前位置，支持 Markdown 和链接' : '输入内容、工作说明或相关链接'"
           ></textarea>
-          <div v-show="mode === 'preview'" class="editor-preview">
+          <div v-show="mode !== 'write'" class="editor-preview">
             <h1 v-if="form.title">{{ form.title }}</h1>
-            <template v-for="(item, index) in blocks" :key="index">
-              <p v-if="item.type === 'paragraph'" :class="`align-${item.align}`">
-                <template v-for="(segment, segmentIndex) in item.segments" :key="segmentIndex">
-                  <a v-if="segment.type === 'link'" :href="segment.value" target="_blank" rel="noopener noreferrer">{{ segment.label }}</a>
-                  <span v-else>{{ segment.value }}</span>
-                </template>
-              </p>
-              <figure v-else :class="`align-${item.align}`"><img :src="item.src" :alt="item.alt"></figure>
-            </template>
-            <p v-if="!blocks.length" class="editor-preview-empty">正文还是空的</p>
+            <div v-if="previewHtml" class="editor-preview-content" v-html="previewHtml"></div>
+            <p v-else class="editor-preview-empty">正文还是空的</p>
           </div>
         </section>
 
@@ -472,7 +500,7 @@ onUnmounted(() => {
 .editor-meta-row input{width:100%;box-sizing:border-box;padding:11px;border:1px solid var(--app-line);border-radius:11px;outline:0;color:var(--app-text);background:var(--ion-background-color);font:16px inherit}
 
 .editor-shell{display:flex;flex-direction:column;padding:0!important;overflow:hidden}
-.editor-modes{display:grid;grid-template-columns:1fr 1fr;gap:3px;padding:4px;border-bottom:1px solid var(--app-line)}
+.editor-modes{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:4px;border-bottom:1px solid var(--app-line)}
 .editor-modes button{height:34px;border:0;border-radius:9px;color:var(--app-muted);background:transparent;font:inherit;font-size:13px}
 .editor-modes button.active{color:#1677ff;background:#eff5ff;font-weight:700}
 .editor-toolbar{display:flex;gap:0;overflow-x:auto;padding:6px;border-bottom:1px solid var(--app-line);scrollbar-width:none}
@@ -486,6 +514,20 @@ onUnmounted(() => {
 .editor-preview{min-height:300px;padding:14px;font-size:15px;line-height:1.75}
 .editor-preview h1{margin:0 0 12px;font-size:21px;line-height:1.4}
 .editor-preview p{margin:0 0 13px;white-space:pre-wrap;overflow-wrap:anywhere}
+.editor-preview-content{overflow-wrap:anywhere}
+.editor-preview-content :deep(p){margin:0 0 13px}
+.editor-preview-content :deep(h1),.editor-preview-content :deep(h2),.editor-preview-content :deep(h3){margin:16px 0 8px;line-height:1.35}
+.editor-preview-content :deep(ul),.editor-preview-content :deep(ol){padding-left:24px;margin:8px 0 14px}
+.editor-preview-content :deep(blockquote){margin:12px 0;padding:8px 12px;border-left:3px solid #60a5fa;background:var(--app-soft);color:var(--app-muted)}
+.editor-preview-content :deep(pre){overflow:auto;padding:12px;border-radius:10px;background:#111827;color:#e5e7eb}
+.editor-preview-content :deep(code){padding:2px 4px;border-radius:4px;background:var(--app-soft);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.editor-preview-content :deep(pre code){padding:0;background:transparent;color:inherit}
+.editor-preview-content :deep(table){width:100%;border-collapse:collapse;margin:12px 0}
+.editor-preview-content :deep(th),.editor-preview-content :deep(td){padding:7px 8px;border:1px solid var(--app-line);text-align:left}
+.editor-preview-content :deep(img){display:block;max-width:100%;height:auto;border-radius:9px;margin:12px 0}
+.editor-preview-content :deep(a){color:#1677ff}
+.editor-preview-content :deep(.saved-link-align-center){text-align:center}
+.editor-preview-content :deep(.saved-link-align-right){text-align:right}
 .editor-preview .align-center{text-align:center}
 .editor-preview .align-right{text-align:right}
 .editor-preview a{color:#1677ff}

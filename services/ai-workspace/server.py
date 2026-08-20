@@ -95,7 +95,11 @@ def infer_model_type(model_id):
         return "image"
     if any(token in value for token in ("embedding", "embed-", "text-embedding")):
         return "embedding"
-    if any(token in value for token in ("whisper", "transcribe", "tts", "speech")):
+    if any(token in value for token in (
+        "whisper", "transcribe", "transcription", "asr", "paraformer",
+        "qwen-audio", "qwen-tts", "tts", "speech", "cosyvoice", "fun-asr",
+        "sambert",
+    )):
         return "audio"
     return "chat"
 
