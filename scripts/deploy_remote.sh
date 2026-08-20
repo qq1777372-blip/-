@@ -79,8 +79,15 @@ trap rollback ERR
 sudo tar -czf "$BACKUP_DIR/backend.tar.gz" -C "$APP_DIR" \
   main.py schemas.py database.py models.py requirements.txt app alembic alembic.ini
 if sudo test -d "$AI_DIR"; then
-  sudo tar -czf "$AI_BACKUP_DIR/ai-workspace.tar.gz" -C "$AI_DIR" \
-    README.md migrate_legacy_knowledge.py requirements.txt server.py test_server.py
+  AI_BACKUP_FILES=()
+  for file in README.md migrate_legacy_knowledge.py requirements.txt server.py test_server.py; do
+    if sudo test -f "$AI_DIR/$file"; then
+      AI_BACKUP_FILES+=("$file")
+    fi
+  done
+  if [[ ${#AI_BACKUP_FILES[@]} -gt 0 ]]; then
+    sudo tar -czf "$AI_BACKUP_DIR/ai-workspace.tar.gz" -C "$AI_DIR" "${AI_BACKUP_FILES[@]}"
+  fi
 fi
 sudo rm -rf "$FRONTEND_BACKUP"
 sudo cp -a "$APP_DIR/frontend/dist" "$FRONTEND_BACKUP"
