@@ -100,6 +100,33 @@ def infer_model_type(model_id):
     return "chat"
 
 
+def provider_audio_presets(provider):
+    """Return audio models that are part of the OpenAI-compatible API surface."""
+    if not provider:
+        return []
+    provider_id = str(provider["provider_id"] if "provider_id" in provider.keys() else "").lower()
+    base_url = str(provider["base_url"] if "base_url" in provider.keys() else "").lower()
+    if provider_id == "openai" or "api.openai.com" in base_url:
+        return ["gpt-4o-mini-transcribe", "gpt-4o-mini-tts"]
+    return []
+
+
+def audio_content_type(filename):
+    suffix = Path(filename).suffix.lower()
+    known = {
+        ".flac": "audio/flac",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".mpeg": "audio/mpeg",
+        ".mpga": "audio/mpeg",
+        ".ogg": "audio/ogg",
+        ".wav": "audio/wav",
+        ".webm": "audio/webm",
+    }
+    return known.get(suffix) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
 def extract_text(name, raw):
     suffix = Path(name).suffix.lower()
     if suffix == ".pdf":
@@ -674,6 +701,9 @@ def fetch_provider_model_ids(provider=None):
 def sync_provider_models(connection, now, connection_id=""):
     provider = connection.execute("SELECT * FROM provider_connections WHERE id=?", (connection_id,)).fetchone() if connection_id else None
     model_ids = fetch_provider_model_ids(provider)
+    for audio_model in provider_audio_presets(provider):
+        if audio_model not in model_ids:
+            model_ids.append(audio_model)
     if not model_ids:
         raise ValueError("模型接口没有返回可用模型")
 
@@ -1423,7 +1453,8 @@ class Handler(BaseHTTPRequestHandler):
                 model_id = str(data.get("model_id", "")); model = connection.execute("SELECT * FROM models WHERE id=? AND enabled=1 AND model_type='audio'", (model_id,)).fetchone() if model_id else connection.execute("SELECT * FROM models WHERE enabled=1 AND model_type='audio' ORDER BY is_default DESC,pinned DESC,name LIMIT 1").fetchone()
                 if not model: raise ValueError("没有可用的语音转写模型")
                 provider = connection.execute("SELECT * FROM provider_connections WHERE id=? AND enabled=1", (model["connection_id"],)).fetchone()
-                body, boundary = multipart_file({"model": model["base_model"]}, "file", filename, raw, mimetypes.guess_type(filename)[0] or "audio/webm")
+                if not provider: raise ValueError("语音模型没有绑定启用的账号连接")
+                body, boundary = multipart_file({"model": model["base_model"]}, "file", filename, raw, audio_content_type(filename))
                 endpoint = provider_api_base(provider["base_url"], provider["provider_type"]) + "/audio/transcriptions"
                 request = urllib.request.Request(endpoint, data=body, headers={"Content-Type": "multipart/form-data; boundary=" + boundary, "Authorization": "Bearer " + provider["api_key"], "User-Agent": "RuoShopAdmin/1.0"}, method="POST")
                 with urllib.request.urlopen(request, timeout=180) as response: result = json.loads(response.read().decode("utf-8"))
@@ -1431,11 +1462,13 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/audio/speech":
                 text_value = str(data.get("text", "")).strip()
                 if not text_value: raise ValueError("朗读内容不能为空")
+                if len(text_value) > 4096: raise ValueError("朗读内容过长，请分段播放")
                 model_id = str(data.get("model_id", "")); model = connection.execute("SELECT * FROM models WHERE id=? AND enabled=1 AND model_type='audio'", (model_id,)).fetchone() if model_id else connection.execute("SELECT * FROM models WHERE enabled=1 AND model_type='audio' ORDER BY is_default DESC,pinned DESC,name LIMIT 1").fetchone()
                 if not model: raise ValueError("没有可用的语音模型")
                 provider = connection.execute("SELECT * FROM provider_connections WHERE id=? AND enabled=1", (model["connection_id"],)).fetchone()
+                if not provider: raise ValueError("语音模型没有绑定启用的账号连接")
                 endpoint = provider_api_base(provider["base_url"], provider["provider_type"]) + "/audio/speech"
-                payload = {"model": model["base_model"], "input": text_value[:12000], "voice": str(data.get("voice", "alloy")), "response_format": "mp3"}
+                payload = {"model": model["base_model"], "input": text_value, "voice": str(data.get("voice", "alloy")), "response_format": "mp3"}
                 request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", "Authorization": "Bearer " + provider["api_key"], "User-Agent": "RuoShopAdmin/1.0"}, method="POST")
                 with urllib.request.urlopen(request, timeout=180) as response: audio = response.read()
                 record_usage(connection, self.identity()[0], model["id"], "audio_speech", request_started); json_response(self, 200, {"mime": "audio/mpeg", "data": base64.b64encode(audio).decode("ascii")})

@@ -88,7 +88,10 @@ const imageSize = ref("1024x1024");
 const pendingImages = ref<string[]>([]);
 const pendingFileIds = ref<string[]>([]);
 const recording = ref(false);
+const speakingMessageId = ref("");
 let mediaRecorder: MediaRecorder | null = null;
+let speechAudio: HTMLAudioElement | null = null;
+let speechResolve: (() => void) | null = null;
 const config = ref<AiConfig>({ base_url: "", model: "", has_key: false });
 const settingsVisible = ref(false);
 const settingsSaving = ref(false);
@@ -132,6 +135,30 @@ function filterWorkspaceModel(query: string, option: any) {
   return `${model.name || ""} ${model.base_model || ""} ${model.provider_id || ""} ${model.connection_name || ""}`
     .toLowerCase()
     .includes(String(query || "").trim().toLowerCase());
+}
+
+function speechChunks(value: string, maxLength = 3600) {
+  const parts = value.match(/[^。！？.!?\n]+[。！？.!?\n]?/g) || [value];
+  const chunks: string[] = []; let current = "";
+  for (const part of parts) {
+    if (current && current.length + part.length > maxLength) { chunks.push(current); current = ""; }
+    if (part.length > maxLength) {
+      for (let index = 0; index < part.length; index += maxLength) chunks.push(part.slice(index, index + maxLength));
+    } else current += part;
+  }
+  if (current) chunks.push(current);
+  return chunks.filter(Boolean);
+}
+
+function recordingMime() {
+  const candidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+  return candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) || "";
+}
+
+function recordingExtension(mime: string) {
+  if (mime.includes("mp4")) return "m4a";
+  if (mime.includes("ogg")) return "ogg";
+  return "webm";
 }
 
 const storageKey = computed(
@@ -995,6 +1022,12 @@ async function exportAnswer(format: "docx" | "xlsx" | "pdf", target?: Message) {
   }
 }
 
+function stopSpeech() {
+  speakingMessageId.value = "";
+  speechAudio?.pause(); speechAudio = null;
+  speechResolve?.(); speechResolve = null;
+}
+
 async function speakLastAnswer(target?: Message) {
   const message =
     target ||
@@ -1002,14 +1035,28 @@ async function speakLastAnswer(target?: Message) {
       .reverse()
       .find((item) => item.role === "assistant" && item.content);
   if (!message) return ElMessage.warning("当前会话还没有可朗读的回答");
+  if (speakingMessageId.value === message.id) { stopSpeech(); return; }
+  stopSpeech(); speakingMessageId.value = message.id;
   try {
-    const result = await knowledgeApi<{ mime: string; data: string }>(
-      "audio/speech",
-      { method: "POST", body: JSON.stringify({ text: message.content }) },
-    );
-    new Audio(`data:${result.mime};base64,${result.data}`).play();
+    for (const chunk of speechChunks(message.content)) {
+      if (speakingMessageId.value !== message.id) return;
+      const result = await knowledgeApi<{ mime: string; data: string }>(
+        "audio/speech",
+        { method: "POST", body: JSON.stringify({ text: chunk }) },
+      );
+      if (speakingMessageId.value !== message.id) return;
+      const audio = new Audio(`data:${result.mime};base64,${result.data}`); speechAudio = audio;
+      await new Promise<void>((resolve, reject) => {
+        speechResolve = resolve;
+        audio.onended = () => { speechResolve = null; resolve(); };
+        audio.onerror = () => { speechResolve = null; reject(new Error("音频播放失败")); };
+        void audio.play().catch(reject);
+      });
+    }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "语音生成失败");
+    if (speakingMessageId.value === message.id) ElMessage.error(error instanceof Error ? error.message : "语音生成失败");
+  } finally {
+    if (speakingMessageId.value === message.id) stopSpeech();
   }
 }
 
@@ -1021,14 +1068,14 @@ async function toggleRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const chunks: BlobPart[] = [];
-    mediaRecorder = new MediaRecorder(stream);
+    const mime = recordingMime();
+    mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
     mediaRecorder.ondataavailable = (event) => chunks.push(event.data);
     mediaRecorder.onstop = async () => {
       recording.value = false;
       stream.getTracks().forEach((track) => track.stop());
-      const blob = new Blob(chunks, {
-        type: mediaRecorder?.mimeType || "audio/webm",
-      });
+      const actualMime = mediaRecorder?.mimeType || mime || "audio/webm";
+      const blob = new Blob(chunks, { type: actualMime });
       const data = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () =>
@@ -1041,7 +1088,7 @@ async function toggleRecording() {
           "audio/transcriptions",
           {
             method: "POST",
-            body: JSON.stringify({ filename: "recording.webm", data }),
+            body: JSON.stringify({ filename: `recording.${recordingExtension(actualMime)}`, data }),
           },
         );
         prompt.value = [prompt.value, result.text].filter(Boolean).join(" ");
@@ -1457,7 +1504,7 @@ onMounted(async () => {
                 type="button"
                 @click="speakLastAnswer(message)"
               >
-                朗读</button
+                {{ speakingMessageId === message.id ? "停止" : "朗读" }}</button
               ><button v-if="message.content" type="button" @click="saveMessageAsNote(message)">保存笔记</button
               ><el-dropdown
                 v-if="message.role === 'assistant' && message.content"

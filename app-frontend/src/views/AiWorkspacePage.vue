@@ -48,6 +48,7 @@ const selectedToolIds = ref<string[]>([]);
 const selectedAudioModelId = ref("");
 const modelSearch = ref("");
 const voice = ref("alloy");
+const speakingMessageId = ref("");
 const activeRequest = ref<AbortController | null>(null);
 const contentRef = ref<InstanceType<typeof IonContent> | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -60,6 +61,8 @@ const chatSearch = ref("");
 const dialog = ref({ open: false, title: "", value: "", multiline: false, action: "" as "rename" | "edit" | "note" | "" });
 let dialogMessage: Message | null = null;
 let mediaRecorder: MediaRecorder | null = null;
+let speechAudio: HTMLAudioElement | null = null;
+let speechResolve: (() => void) | null = null;
 
 const storageKey = computed(() => `ruoshop-ai-workspace:${session.user?.id || "local"}`);
 const activeChat = computed(() => chats.value.find((c) => c.id === activeId.value) ?? null);
@@ -101,6 +104,27 @@ watch(useKnowledge, (v) => localStorage.setItem("ruoshop-app-ai-use-knowledge", 
 
 function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`; }
 function renderMarkdown(value: string) { return md.render(value || ""); }
+function speechChunks(value: string, maxLength = 3600) {
+  const parts = value.match(/[^。！？.!?\n]+[。！？.!?\n]?/g) || [value];
+  const chunks: string[] = []; let current = "";
+  for (const part of parts) {
+    if (current && current.length + part.length > maxLength) { chunks.push(current); current = ""; }
+    if (part.length > maxLength) {
+      for (let index = 0; index < part.length; index += maxLength) chunks.push(part.slice(index, index + maxLength));
+    } else current += part;
+  }
+  if (current) chunks.push(current);
+  return chunks.filter(Boolean);
+}
+function recordingMime() {
+  const candidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+  return candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) || "";
+}
+function recordingExtension(mime: string) {
+  if (mime.includes("mp4")) return "m4a";
+  if (mime.includes("ogg")) return "ogg";
+  return "webm";
+}
 function openSource(source: Source) {
   if (source.url) window.open(source.url, "_blank", "noopener,noreferrer");
 }
@@ -341,24 +365,45 @@ async function exportAnswer(msg: Message, format: "docx" | "xlsx" | "pdf") {
   } catch (e) { await notify(e instanceof Error ? e.message : "导出失败", "danger"); }
 }
 
+function stopSpeech() {
+  speakingMessageId.value = "";
+  speechAudio?.pause(); speechAudio = null;
+  speechResolve?.(); speechResolve = null;
+}
+
 async function speak(msg: Message) {
+  if (speakingMessageId.value === msg.id) { stopSpeech(); return; }
+  stopSpeech(); speakingMessageId.value = msg.id;
   try {
-    const result = await api<{ mime: string; data: string }>("audio/speech", { method: "POST", body: JSON.stringify({ text: msg.content, model_id: selectedAudioModelId.value || undefined, voice: voice.value }) });
-    await new Audio(`data:${result.mime};base64,${result.data}`).play();
-  } catch (e) { await notify(e instanceof Error ? e.message : "朗读失败", "danger"); }
+    for (const chunk of speechChunks(msg.content)) {
+      if (speakingMessageId.value !== msg.id) return;
+      const result = await api<{ mime: string; data: string }>("audio/speech", { method: "POST", body: JSON.stringify({ text: chunk, model_id: selectedAudioModelId.value || undefined, voice: voice.value }) });
+      if (speakingMessageId.value !== msg.id) return;
+      const audio = new Audio(`data:${result.mime};base64,${result.data}`); speechAudio = audio;
+      await new Promise<void>((resolve, reject) => {
+        speechResolve = resolve;
+        audio.onended = () => { speechResolve = null; resolve(); };
+        audio.onerror = () => { speechResolve = null; reject(new Error("音频播放失败")); };
+        void audio.play().catch(reject);
+      });
+    }
+  } catch (e) { if (speakingMessageId.value === msg.id) await notify(e instanceof Error ? e.message : "朗读失败", "danger"); }
+  finally { if (speakingMessageId.value === msg.id) stopSpeech(); }
 }
 
 async function toggleRecording() {
   if (recording.value) { mediaRecorder?.stop(); return; }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const chunks: Blob[] = [];
-    mediaRecorder = new MediaRecorder(stream);
+    const mime = recordingMime();
+    mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
     mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
     mediaRecorder.onstop = async () => {
       recording.value = false; stream.getTracks().forEach((t) => t.stop());
-      const blob = new Blob(chunks, { type: mediaRecorder?.mimeType || "audio/webm" });
+      const actualMime = mediaRecorder?.mimeType || mime || "audio/webm";
+      const blob = new Blob(chunks, { type: actualMime });
       const data = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "").split(",", 2)[1] || ""); r.onerror = () => reject(new Error("读取失败")); r.readAsDataURL(blob); });
-      try { const result = await api<{ text: string }>("audio/transcriptions", { method: "POST", body: JSON.stringify({ filename: "recording.webm", data, model_id: selectedAudioModelId.value || undefined }) }); prompt.value = [prompt.value, result.text].filter(Boolean).join(" "); }
+      try { const result = await api<{ text: string }>("audio/transcriptions", { method: "POST", body: JSON.stringify({ filename: `recording.${recordingExtension(actualMime)}`, data, model_id: selectedAudioModelId.value || undefined }) }); prompt.value = [prompt.value, result.text].filter(Boolean).join(" "); }
       catch (e) { await notify(e instanceof Error ? e.message : "语音转写失败", "danger"); }
     };
     mediaRecorder.start(); recording.value = true;
@@ -488,7 +533,7 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
                 <button @click="copy(msg.content)"><IonIcon :icon="copyOutline" />复制</button>
                 <button @click="saveAsNote(msg)"><IonIcon :icon="documentOutline" />Notes</button>
                 <button @click="regenerate(msg)"><IonIcon :icon="refreshOutline" />重生成</button>
-                <button @click="speak(msg)"><IonIcon :icon="volumeHighOutline" />朗读</button>
+                <button @click="speakingMessageId === msg.id ? stopSpeech() : speak(msg)"><IonIcon :icon="speakingMessageId === msg.id ? stopOutline : volumeHighOutline" />{{ speakingMessageId === msg.id ? '停止' : '朗读' }}</button>
                 <button @click="branchFrom(msg)"><IonIcon :icon="gitBranchOutline" />分支</button>
                 <details class="export-menu"><summary>导出</summary><div><button @click="exportAnswer(msg, 'docx')">Word</button><button @click="exportAnswer(msg, 'xlsx')">Excel</button><button @click="exportAnswer(msg, 'pdf')">PDF</button></div></details>
               </div>
