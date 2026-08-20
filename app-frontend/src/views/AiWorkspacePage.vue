@@ -20,7 +20,7 @@ import { session } from "../session";
 type Source = { id: string; title: string; url?: string; content?: string };
 type Message = { id: string; role: "user" | "assistant"; content: string; imageUrl?: string; imageUrls?: string[]; fileIds?: string[]; sources?: Source[] };
 type Chat = { id: string; title: string; messages: Message[]; createdAt: number; updatedAt: number; modelId?: string; favorite?: boolean; archived?: boolean; folder?: string };
-type Option = { id: string; name: string; model_type?: string; enabled?: number; hidden?: number; knowledge_id?: string; skill_ids?: string; tool_ids?: string };
+type Option = { id: string; name: string; base_model?: string; provider_id?: string; connection_name?: string; model_type?: string; enabled?: number; hidden?: number; knowledge_id?: string; skill_ids?: string; tool_ids?: string };
 
 const router = useRouter();
 const tab = ref<"chat" | "history">("chat");
@@ -46,6 +46,7 @@ const selectedKnowledgeId = ref("");
 const selectedSkillIds = ref<string[]>([]);
 const selectedToolIds = ref<string[]>([]);
 const selectedAudioModelId = ref("");
+const modelSearch = ref("");
 const voice = ref("alloy");
 const activeRequest = ref<AbortController | null>(null);
 const contentRef = ref<InstanceType<typeof IonContent> | null>(null);
@@ -66,6 +67,14 @@ const userId = computed(() => String(session.user?.id || "local"));
 const currentModelName = computed(() => models.value.find((m) => m.id === selectedModelId.value)?.name || "基础模型");
 const md = new MarkdownIt({ html: false, breaks: true, linkify: true });
 const audioModels = computed(() => models.value.filter((m) => m.model_type === "audio"));
+const filteredChatModels = computed(() => {
+  const query = modelSearch.value.trim().toLowerCase();
+  return models.value.filter((item) => {
+    if (item.model_type === "audio") return false;
+    if (!query) return true;
+    return `${item.name || ""} ${item.base_model || ""} ${item.provider_id || ""} ${item.connection_name || ""}`.toLowerCase().includes(query);
+  });
+});
 
 const starters = [
   { icon: sparklesOutline, label: "推广数据诊断", text: "分析店铺推广数据时应该重点看哪些指标？" },
@@ -554,9 +563,12 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
           <button @click="optionsOpen = false; router.push('/tabs/module/ai-operations')">运行与治理</button>
           <button @click="optionsOpen = false; router.push('/tabs/module/ai-capabilities')">能力库</button>
         </div>
-        <section class="model-picker"><b>选择模型</b><div class="model-options">
+        <section class="model-picker"><b>选择模型</b>
+          <input v-model="modelSearch" class="model-search" type="search" placeholder="搜索模型、品牌或账号" />
+          <div class="model-options">
           <button :class="{ on: !selectedModelId }" @click="selectedModelId = ''"><span>基础模型</span><IonIcon v-if="!selectedModelId" :icon="checkmarkOutline" /></button>
-          <button v-for="item in models.filter(m => m.model_type !== 'audio')" :key="item.id" :class="{ on: selectedModelId === item.id }" @click="selectedModelId = item.id"><span>{{ item.name }}</span><IonIcon v-if="selectedModelId === item.id" :icon="checkmarkOutline" /></button>
+          <button v-for="item in filteredChatModels" :key="item.id" :class="{ on: selectedModelId === item.id }" @click="selectedModelId = item.id"><span>{{ item.name }}<small v-if="item.provider_id || item.connection_name">{{ [item.provider_id, item.connection_name].filter(Boolean).join(' · ') }}</small></span><IonIcon v-if="selectedModelId === item.id" :icon="checkmarkOutline" /></button>
+          <small v-if="!filteredChatModels.length" class="model-empty">没有匹配的模型</small>
         </div></section>
         <section v-if="audioModels.length" class="model-picker"><b>语音模型</b><div class="model-options compact">
           <button v-for="item in audioModels" :key="item.id" :class="{ on: selectedAudioModelId === item.id }" @click="selectedAudioModelId = item.id"><span>{{ item.name }}</span><IonIcon v-if="selectedAudioModelId === item.id" :icon="checkmarkOutline" /></button>
@@ -720,7 +732,7 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 .bottom-sheet section b { display: block; margin-bottom: 8px; color: var(--app-muted); font-size: 11px; }
 .bottom-sheet section label { display: flex; align-items: center; gap: 8px; min-height: 34px; font-size: 13px; color: var(--app-text); }
 .bottom-sheet section input[type="checkbox"] { width: 17px; height: 17px; }
-.bottom-sheet .model-picker{padding:10px 8px 8px}.bottom-sheet .model-picker>b{padding:2px 5px 8px;font-size:12px}.model-options{max-height:240px;overflow-y:auto;border-radius:9px;background:var(--ion-background-color)}.model-options button{width:100%;min-height:42px;padding:8px 11px;border:0;border-bottom:1px solid var(--app-line);display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;color:var(--app-text);background:transparent;font-size:13px}.model-options button:last-child{border-bottom:0}.model-options button span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.model-options button ion-icon{flex:none;color:var(--app-blue);font-size:18px}.model-options button.on{color:var(--app-blue);background:color-mix(in srgb,var(--app-blue) 9%,var(--app-card));font-weight:600}
+.bottom-sheet .model-picker{padding:10px 8px 8px}.bottom-sheet .model-picker>b{padding:2px 5px 8px;font-size:12px}.model-search{width:100%;height:36px;margin:0 0 8px;padding:0 10px;border:1px solid var(--app-line);border-radius:10px;outline:0;color:var(--app-text);background:var(--ion-background-color);font-size:13px}.model-search:focus{border-color:var(--app-blue)}.model-options{max-height:240px;overflow-y:auto;border-radius:9px;background:var(--ion-background-color)}.model-options button{width:100%;min-height:42px;padding:8px 11px;border:0;border-bottom:1px solid var(--app-line);display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;color:var(--app-text);background:transparent;font-size:13px}.model-options button:last-child{border-bottom:0}.model-options button span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.model-options button small{display:block;margin-top:2px;overflow:hidden;color:var(--app-muted);font-size:10px;font-weight:400;text-overflow:ellipsis;white-space:nowrap}.model-options button ion-icon{flex:none;color:var(--app-blue);font-size:18px}.model-options button.on{color:var(--app-blue);background:color-mix(in srgb,var(--app-blue) 9%,var(--app-card));font-weight:600}.model-empty{display:block;padding:18px 10px;text-align:center;color:var(--app-muted);font-size:12px}
 .model-options.compact{max-height:168px}.bottom-sheet .voice-picker{padding:10px}.voice-picker>div{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}.voice-picker>div button{height:32px;padding:0 4px;border:1px solid var(--app-line);border-radius:8px;color:var(--app-muted);background:var(--ion-background-color);font-size:10px;text-transform:capitalize}.voice-picker>div button.on{border-color:var(--app-blue);color:#fff;background:var(--app-blue)}
 .sheet-links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 6px; }
 .sheet-links button { min-height: 42px; border: 0; border-radius: 12px; color: var(--app-blue); background: var(--app-card); font-size: 13px; }

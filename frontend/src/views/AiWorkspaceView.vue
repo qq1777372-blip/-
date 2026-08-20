@@ -126,6 +126,14 @@ const selectedKnowledgeId = ref("");
 const selectedSkillIds = ref<string[]>([]);
 const selectedToolIds = ref<string[]>([]);
 
+function filterWorkspaceModel(query: string, option: any) {
+  const model = workspaceModels.value.find((item) => String(item.id) === String(option?.value));
+  if (!model) return false;
+  return `${model.name || ""} ${model.base_model || ""} ${model.provider_id || ""} ${model.connection_name || ""}`
+    .toLowerCase()
+    .includes(String(query || "").trim().toLowerCase());
+}
+
 const storageKey = computed(
   () => `ruoshop-ai-workspace:${authStore.currentUser?.id || "local"}`,
 );
@@ -1603,6 +1611,8 @@ onMounted(async () => {
               v-model="selectedModelId"
               class="composer-model-select"
               clearable
+              filterable
+              :filter-method="filterWorkspaceModel"
               placement="top-end"
               popper-class="workspace-model-popper"
               placeholder="基础模型"
