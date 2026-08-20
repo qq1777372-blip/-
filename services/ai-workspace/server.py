@@ -66,7 +66,13 @@ def upstream_http_error(error, service="模型服务"):
             detail = str(error_value)
     except (json.JSONDecodeError, TypeError):
         pass
-    if "valid api key" in detail.lower():
+    lowered = detail.lower()
+    if "user location is not supported" in lowered or "location is not supported" in lowered:
+        detail = (
+            "Google Gemini 拒绝了当前服务器出口地区。生产服务器位于香港，Google Gemini API 对该出口地区不可用；"
+            "这不是模型 ID 或 Key 格式问题。请改用支持当前地区的 Gemini 中转/OpenRouter，或把 AI 工作台部署到 Gemini 支持的地区。"
+        )
+    elif "valid api key" in lowered:
         detail = "API Key 无效，请重新粘贴 Google AI Studio 生成的 Gemini API Key"
     return ValueError(f"{service}返回 HTTP {error.code}: {detail or error.reason}")
 
