@@ -245,8 +245,8 @@ def create_warehouse_router(
     timezone: ZoneInfo,
     uploads_dir: Path,
     product_upload_dir: Path,
-    image_file_response: Callable[..., Any],
-    warm_image_thumbnails: Callable[[Path], None],
+    image_file_response: Callable[..., Any] | None = None,
+    warm_image_thumbnails: Callable[[Path], None] | None = None,
 ) -> APIRouter:
     """Build the warehouse router.
 
@@ -401,6 +401,9 @@ def create_warehouse_router(
             raise HTTPException(status_code=404, detail="商品图片不存在") from exc
         if not image_file.is_file():
             raise HTTPException(status_code=404, detail="商品图片不存在")
+        if image_file_response is None:
+            media_type, _ = mimetypes.guess_type(image_file.name)
+            return FileResponse(image_file, media_type=media_type or "application/octet-stream", filename=record.image_name or image_file.name, content_disposition_type="inline")
         return image_file_response(
             image_file,
             record.image_name or image_file.name,
@@ -424,7 +427,7 @@ def create_warehouse_router(
             uploads_dir=uploads_dir,
             product_upload_dir=product_upload_dir,
         )
-        if record.image_path:
+        if record.image_path and warm_image_thumbnails is not None:
             warm_image_thumbnails(uploads_dir / record.image_path)
         write_audit_log(db, actor=current_user, action="warehouse_product_image_updated", resource_type="warehouse_product", resource_id=record.id)
         commit_session(db, default_detail="商品图片保存失败")
