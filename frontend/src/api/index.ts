@@ -25,6 +25,7 @@ import type {
   DashboardStats,
   ServerStatus,
   DingTalkProfitMonthlySummary,
+  DingTalkProfitDailySummary,
   DingTalkProfitRecord,
   DingTalkProfitSummary,
   GlobalSearchResponse,
@@ -184,6 +185,11 @@ export async function fetchDingTalkProfitSummary() {
 
 export async function fetchDingTalkProfitMonthlySummary() {
   const { data } = await http.get<DingTalkProfitMonthlySummary[]>('/dingtalk-profits/monthly-summary')
+  return data
+}
+
+export async function fetchDingTalkProfitDailySummary(days = 7) {
+  const { data } = await http.get<DingTalkProfitDailySummary[]>(`/dingtalk-profits/daily-summary?days=${days}`)
   return data
 }
 

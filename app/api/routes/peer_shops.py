@@ -166,6 +166,9 @@ def create_peer_shop_router(
     def get_peer_shop_image_file(
         record_id: int,
         thumb: int = 0,
+        width: int = 720,
+        format: str = "webp",
+        quality: int = 76,
         db: Session = Depends(get_db),
         _: AdminUser = Depends(require_role("viewer")),
     ):
@@ -177,7 +180,14 @@ def create_peer_shop_router(
         if image_file is None:
             raise HTTPException(status_code=404, detail="Peer-shop image not found")
 
-        return image_file_response(image_file, db_record.image_name, thumbnail=bool(thumb))
+        return image_file_response(
+            image_file,
+            db_record.image_name,
+            thumbnail=bool(thumb),
+            max_edge=width,
+            image_format=format,
+            quality=quality,
+        )
 
 
     @router.put(

@@ -241,6 +241,12 @@ export interface DingTalkProfitMonthlySummary {
   latest_report_date: string | null
 }
 
+export interface DingTalkProfitDailySummary {
+  date: string
+  total_profit: number
+  record_count: number
+}
+
 export interface GlobalSearchResultItem {
   id: number
   category: 'shop_record' | 'license_record' | 'account_usage_record' | 'task_bookkeeping_record'

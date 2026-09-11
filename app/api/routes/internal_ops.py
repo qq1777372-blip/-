@@ -161,6 +161,18 @@ def create_internal_ops_router(
         payload.sort(key=lambda item: item["month"], reverse=True)
         return payload
 
+    def build_dingtalk_profit_daily_summary(db: Session, days: int = 7) -> list[dict[str, Any]]:
+        records = db.scalars(
+            select(DingTalkProfitRecord).order_by(DingTalkProfitRecord.report_date.desc()),
+        ).all()
+        buckets: dict[str, dict[str, Any]] = {}
+        for record in records:
+            key = record.report_date.isoformat()
+            bucket = buckets.setdefault(key, {"date": key, "total_profit": 0.0, "record_count": 0})
+            bucket["total_profit"] += float(record.profit or 0)
+            bucket["record_count"] += 1
+        return sorted(buckets.values(), key=lambda item: item["date"], reverse=True)[:max(1, min(days, 90))][::-1]
+
     def require_internal_sync_token(
         internal_sync_token: str | None = Header(default=None, alias=INTERNAL_SYNC_TOKEN_HEADER),
     ) -> None:
@@ -365,6 +377,14 @@ def create_internal_ops_router(
         _: AdminUser = Depends(require_role("viewer")),
     ):
         return build_dingtalk_profit_monthly_summary(db)
+
+    @router.get("/dingtalk-profits/daily-summary")
+    def get_dingtalk_profit_daily_summary(
+        days: int = 7,
+        db: Session = Depends(get_db),
+        _: AdminUser = Depends(require_role("admin")),
+    ) -> list[dict[str, Any]]:
+        return build_dingtalk_profit_daily_summary(db, days)
 
     @router.get(
         "/dingtalk-profits",

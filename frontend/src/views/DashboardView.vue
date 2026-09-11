@@ -27,6 +27,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   fetchDashboardStats,
   fetchDingTalkProfitMonthlySummary,
+  fetchDingTalkProfits,
   fetchServerStatus,
   fetchSycmLatest,
   fetchWarehouseSummary,
@@ -35,6 +36,7 @@ import { useAuthStore } from '../stores/auth'
 import type {
   DashboardStats,
   DingTalkProfitMonthlySummary,
+  DingTalkProfitDailySummary,
   ServerNodeStatus,
   ServerStatus,
   ServerStatusMetrics,
@@ -52,6 +54,22 @@ const loading = ref(false)
 const stats = ref<DashboardStats | null>(null)
 const warehouseSummary = ref<WarehouseSummary | null>(null)
 const dingtalkMonthlyRows = ref<DingTalkProfitMonthlySummary[]>([])
+const dingtalkDailyRows = ref<DingTalkProfitDailySummary[]>([])
+const allProfitDailyRows = ref<DingTalkProfitDailySummary[]>([])
+const profitRangeDays = ref(7)
+const activeProfitPoint = ref<number | null>(null)
+watch(profitRangeDays, (days) => {
+  dingtalkDailyRows.value = allProfitDailyRows.value.slice(-days)
+  activeProfitPoint.value = null
+})
+const dailyChart = computed(() => {
+  const rows = dingtalkDailyRows.value
+  if (!rows.length) return { line: '', area: '', points: [], labels: [] as string[] }
+  const max = Math.max(...rows.map((row) => Math.abs(row.total_profit)), 1)
+  const points = rows.map((row, index) => [index * (720 / Math.max(rows.length - 1, 1)), 184 - (Math.max(row.total_profit, 0) / max) * 140] as const)
+  const line = points.map(([x, y]) => `${x},${y}`).join(' ')
+  return { line, area: `${line} 720,220 0,220`, points, labels: rows.map((row) => row.date.slice(5)) }
+})
 const serverLoading = ref(false)
 const serverStatus = ref<ServerStatus | null>(null)
 // Which machine's detail is on screen. Set from the fleet once it arrives, and
@@ -560,13 +578,24 @@ async function loadDashboard() {
   loading.value = true
 
   try {
-    const [dashboardStats, monthlySummary, currentWarehouseSummary] = await Promise.all([
+    const [dashboardStats, monthlySummary, profitRecords, currentWarehouseSummary] = await Promise.all([
       fetchDashboardStats(),
       fetchDingTalkProfitMonthlySummary(),
+      fetchDingTalkProfits(),
       canViewWarehouse.value ? fetchWarehouseSummary() : Promise.resolve(null),
     ])
     stats.value = dashboardStats
     dingtalkMonthlyRows.value = monthlySummary
+    const dailyMap = new Map<string, { date: string; total_profit: number; record_count: number }>()
+    for (const record of profitRecords) {
+      const date = record.report_date.slice(0, 10)
+      const bucket = dailyMap.get(date) ?? { date, total_profit: 0, record_count: 0 }
+      bucket.total_profit += Number(record.profit || 0)
+      bucket.record_count += 1
+      dailyMap.set(date, bucket)
+    }
+    allProfitDailyRows.value = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
+    dingtalkDailyRows.value = allProfitDailyRows.value.slice(-profitRangeDays.value)
     warehouseSummary.value = currentWarehouseSummary
   } catch (error) {
     const message = error instanceof Error ? error.message : '加载运营工作台失败'
@@ -590,6 +619,13 @@ onMounted(() => {
     <el-skeleton :loading="props.serverOnly ? serverLoading : loading" animated :rows="8">
       <template #default>
         <section class="page-block dashboard-surface">
+          <div v-if="!props.serverOnly" class="dashboard-welcome">
+            <div>
+              <h1>运营工作台</h1>
+              <p>欢迎回来，{{ authStore.currentUser?.display_name || authStore.currentUser?.username || '管理员' }}，这里是你的店铺经营概览。</p>
+            </div>
+            <span class="dashboard-welcome__date">{{ new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }) }}</span>
+          </div>
           <div v-if="!props.serverOnly && overviewCards.length" class="dash-section dash-section--kpi">
             <div class="kpi-grid">
               <article
@@ -608,6 +644,33 @@ onMounted(() => {
                 <span class="kpi-card__note">{{ card.note }}</span>
               </article>
             </div>
+          </div>
+
+          <div v-if="!props.serverOnly" class="dashboard-charts">
+            <section class="chart-card chart-card--trend">
+              <div class="chart-card__head"><div><h3>钉钉利润趋势</h3><p>按报表日期汇总每日利润</p></div><select v-model.number="profitRangeDays" class="chart-select" aria-label="选择利润趋势时间范围"><option :value="7">近 7 天</option><option :value="14">近 14 天</option><option :value="30">近 30 天</option></select></div>
+              <svg class="trend-chart" viewBox="0 0 720 220" preserveAspectRatio="none" aria-label="经营趋势图">
+                <defs><linearGradient id="trendFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#3b82f6" stop-opacity=".2"/><stop offset="1" stop-color="#3b82f6" stop-opacity="0"/></linearGradient></defs>
+                <path d="M0 178 H720 M0 124 H720 M0 70 H720" class="chart-gridline"/>
+                <path v-if="dailyChart.area" :d="`M${dailyChart.area}`" fill="url(#trendFill)"/>
+                <polyline v-if="dailyChart.line" :points="dailyChart.line" class="chart-line"/>
+                <g v-for="(point, index) in dailyChart.points" :key="point[0]" class="chart-point" @mouseenter="activeProfitPoint = index" @mouseleave="activeProfitPoint = null" @click="activeProfitPoint = index" tabindex="0" @focus="activeProfitPoint = index">
+                  <circle :cx="point[0]" :cy="point[1]" r="13" class="chart-hit"/>
+                  <circle :cx="point[0]" :cy="point[1]" r="4" class="chart-dot"/>
+                </g>
+              </svg>
+              <div class="chart-labels"><span v-for="label in dailyChart.labels" :key="label">{{ label }}</span></div>
+              <div v-if="!dailyChart.labels.length" class="chart-empty">每日利润数据将在后端接口更新后显示</div>
+              <div v-if="activeProfitPoint !== null && dingtalkDailyRows[activeProfitPoint]" class="chart-tooltip">
+                <strong>{{ dingtalkDailyRows[activeProfitPoint].date }}</strong>
+                <span>利润 ¥{{ formatMoney(dingtalkDailyRows[activeProfitPoint].total_profit) }}</span>
+                <span>{{ dingtalkDailyRows[activeProfitPoint].record_count }} 条记录</span>
+              </div>
+            </section>
+            <section class="chart-card chart-card--donut">
+              <div class="chart-card__head"><div><h3>业务状态分布</h3><p>当前各类业务处理状态</p></div></div>
+              <div class="donut-wrap"><div class="donut"><strong>{{ stats?.pending_task_count ?? 0 }}</strong><span>待处理</span></div><div class="donut-legend"><span><i class="legend-blue"/>待处理 <b>{{ stats?.pending_task_count ?? 0 }}</b></span><span><i class="legend-green"/>已完成 <b>{{ stats?.active_admin_count ?? 0 }}</b></span><span><i class="legend-orange"/>需关注 <b>{{ activeReminderCount }}</b></span></div></div>
+            </section>
           </div>
 
           <div v-if="stats || props.serverOnly" class="dashboard-surface__scroll">
@@ -1890,5 +1953,199 @@ onMounted(() => {
   .tile-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* 运营工作台视觉基线：参考企业后台首页的卡片化布局，业务结构与数据接口保持不变。 */
+.dashboard-surface {
+  --color-primary: #1e40af;
+  --color-secondary: #3b82f6;
+  --color-accent: #d97706;
+  --color-background: #f8fafc;
+  --color-border: #dbeafe;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #f5f7fb;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-surface *, .dashboard-surface *::before, .dashboard-surface *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+.dashboard-charts { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, .9fr); gap: 14px; padding: 0 0 2px; width: 100%; min-width: 0; box-sizing: border-box; }
+.chart-card { position: relative; min-width: 0; padding: 18px 20px 14px; border: 1px solid #edf0f5; border-radius: 12px; background: #fff; box-shadow: 0 5px 18px rgba(31,42,68,.045); }
+.chart-card__head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom: 12px; }
+.chart-card h3 { margin:0; color:#273247; font-size:15px; }
+.chart-card p { margin:5px 0 0; color:#98a1b2; font-size:12px; }
+.chart-select { min-height:32px; padding:6px 10px; border:1px solid #e7ebf2; border-radius:6px; background:#fff; color:#68748a; font:inherit; font-size:12px; cursor:pointer; outline:none; }
+.chart-select:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.14); }
+.trend-chart { display:block; width:100%; height:190px; overflow:visible; }
+.chart-gridline { fill:none; stroke:#edf0f5; stroke-width:1; }
+.chart-line { fill:none; stroke:#3b82f6; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+.chart-line { stroke-dasharray: 1100; stroke-dashoffset: 1100; animation: chart-draw 900ms ease-out forwards; }
+.chart-dot { fill:#fff; stroke:#3b82f6; stroke-width:3; transition: r 160ms ease, stroke-width 160ms ease; }
+.chart-point { cursor: pointer; outline: none; }
+.chart-point:hover .chart-dot, .chart-point:focus .chart-dot { r: 6; stroke-width: 4; }
+.chart-hit { fill: transparent; }
+.chart-tooltip { position: absolute; z-index: 3; display: grid; gap: 3px; margin: -138px 0 0 46%; padding: 9px 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #fff; box-shadow: 0 8px 22px rgba(30,64,175,.16); color: #475569; font-size: 11px; pointer-events: none; }
+.chart-tooltip strong { color: #1e3a8a; font-size: 12px; }
+@keyframes chart-draw { to { stroke-dashoffset: 0; } }
+.chart-labels { display:flex; justify-content:space-between; color:#a0a8b6; font-size:11px; }
+.donut-wrap { display:flex; align-items:center; justify-content:center; gap:26px; min-height:210px; }
+.donut { display:flex; width:150px; height:150px; flex-direction:column; align-items:center; justify-content:center; border-radius:50%; background:conic-gradient(#3b82f6 0 34%, #35c58a 34% 68%, #f5aa24 68% 88%, #8664e8 88%); position:relative; color:#263248; }
+.donut::after { content:''; position:absolute; inset:24px; border-radius:50%; background:#fff; }
+.donut strong,.donut span { z-index:1; }.donut strong { font-size:22px; }.donut span { margin-top:3px; color:#96a0b0; font-size:11px; }
+.donut-legend { display:grid; gap:14px; color:#667085; font-size:12px; }.donut-legend span { display:flex; align-items:center; gap:7px; white-space:nowrap; }.donut-legend i { width:9px; height:9px; border-radius:2px; }.legend-blue{background:#3b82f6}.legend-green{background:#35c58a}.legend-orange{background:#f5aa24}.donut-legend b { margin-left:8px; color:#3a465b; }
+
+.dashboard-surface__scroll {
+  padding: 0 0 28px;
+  overflow: visible !important;
+  max-height: none !important;
+}
+
+.dashboard-welcome {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px 22px 18px;
+  background: #fff;
+  border-bottom: 1px solid #eef1f6;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.dashboard-welcome h1 { margin: 0; color: #1f2937; font-size: 24px; font-weight: 700; letter-spacing: -0.4px; }
+.dashboard-welcome p { margin: 8px 0 0; color: #8b95a7; font-size: 13px; }
+.dashboard-welcome__date { color: #8b95a7; font-size: 12px; white-space: nowrap; }
+
+.dash-section,
+.dash-section--kpi {
+  padding: 18px 0;
+  border-top: 0 !important;
+  background: transparent;
+}
+
+.dash-section--kpi {
+  padding-top: 0;
+  padding-bottom: 16px;
+}
+
+.kpi-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.kpi-card {
+  min-height: 112px;
+  padding: 16px 17px;
+  border: 1px solid #edf0f5;
+  border-radius: 12px;
+  box-shadow: 0 5px 18px rgba(31, 42, 68, 0.055);
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.kpi-card__icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 20px;
+}
+
+.kpi-card__value {
+  font-size: 24px;
+  letter-spacing: 0.2px;
+}
+
+.kpi-card__note {
+  border-top: 0;
+  margin-top: 6px;
+  padding-top: 0;
+}
+
+.dash-head {
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.dash-head__text {
+  padding-left: 0;
+}
+
+.dash-head__text::before {
+  display: none;
+}
+
+.dash-head__title {
+  font-size: 15px;
+}
+
+.dash-head__desc { display: none; }
+
+.tile-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.tile-card,
+.data-panel,
+.server-shell {
+  border-color: #edf0f5;
+  border-radius: 12px;
+  box-shadow: 0 5px 18px rgba(31, 42, 68, 0.045);
+}
+
+.tile-card {
+  min-height: 116px;
+  padding: 16px 18px;
+}
+
+.tile-card__note { display: none; }
+.tile-card__value { font-size: 23px; }
+
+.metric-strip {
+  border-color: #edf0f5;
+  border-radius: 12px;
+  box-shadow: 0 5px 18px rgba(31, 42, 68, 0.045);
+}
+
+.data-panel {
+  background: #fff;
+}
+
+@media (max-width: 1100px) {
+  .kpi-grid,
+  .tile-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .kpi-grid,
+  .tile-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .dashboard-welcome { align-items: flex-start; flex-direction: column; padding: 18px 16px 14px; }
+  .dashboard-surface__scroll { padding: 0 14px 22px; }
+  .dashboard-charts { grid-template-columns: 1fr; padding: 0 14px; }
 }
 </style>

@@ -325,6 +325,9 @@ def create_device_license_router(
     def get_license_image_file(
         record_id: int,
         thumb: int = 0,
+        width: int = 720,
+        format: str = "webp",
+        quality: int = 76,
         db: Session = Depends(get_db),
         _: AdminUser = Depends(require_role("viewer")),
     ):
@@ -336,7 +339,14 @@ def create_device_license_router(
         if image_file is None:
             raise HTTPException(status_code=404, detail="License image not found")
 
-        return image_file_response(image_file, db_record.image_name, thumbnail=bool(thumb))
+        return image_file_response(
+            image_file,
+            db_record.image_name,
+            thumbnail=bool(thumb),
+            max_edge=width,
+            image_format=format,
+            quality=quality,
+        )
 
     @router.put(
         "/license-records/{record_id}",

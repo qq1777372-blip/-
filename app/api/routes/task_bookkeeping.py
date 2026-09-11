@@ -11,7 +11,7 @@ Importing them from main.py instead would be a cycle.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -238,11 +238,22 @@ def create_task_bookkeeping_router(
         summary="List all task bookkeeping records",
     )
     def list_task_bookkeeping_records(
+        offset: int = Query(0, ge=0),
+        limit: int = Query(30, ge=1, le=100),
+        q: str | None = Query(None, max_length=100),
         db: Session = Depends(get_db),
         _: AdminUser = Depends(require_role("viewer")),
     ):
         stmt = select(TaskBookkeepingRecord).order_by(TaskBookkeepingRecord.task_time.desc(), TaskBookkeepingRecord.id.desc())
-        records = db.scalars(stmt).all()
+        if q and q.strip():
+            value = f"%{q.strip()}%"
+            stmt = stmt.where(
+                TaskBookkeepingRecord.order_no.ilike(value)
+                | TaskBookkeepingRecord.shop_name.ilike(value)
+                | TaskBookkeepingRecord.owner_name.ilike(value)
+                | TaskBookkeepingRecord.note.ilike(value)
+            )
+        records = db.scalars(stmt.offset(offset).limit(limit)).all()
         return [serialize_task_bookkeeping_record(record) for record in records]
 
     @router.get(
