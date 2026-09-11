@@ -164,8 +164,8 @@ jobs:
           # BatchMode makes ssh fail instead of waiting on a prompt no one can
           # answer in CI.
           SSH_OPTS="-i $HOME/.ssh/deploy_key -o BatchMode=yes"
-          # Production RuoShop host uses the root account (121.196.150.21).
-          ssh $SSH_OPTS root@"$DEPLOY_HOST" "mkdir -p '$STAGE_DIR'"
-          scp $SSH_OPTS backend.tar.gz frontend.tar.gz app-frontend.tar.gz ai-workspace.tar.gz root@"$DEPLOY_HOST":"$STAGE_DIR"/
-          scp $SSH_OPTS scripts/deploy_remote.sh root@"$DEPLOY_HOST":"$STAGE_DIR"/
-          ssh $SSH_OPTS root@"$DEPLOY_HOST" "bash '$STAGE_DIR/deploy_remote.sh' '$VERSION' '$STAGE_DIR' '$VERSION'"
+          # Production RuoShop host uses the ubuntu account (UCloud).
+          ssh $SSH_OPTS ubuntu@"$DEPLOY_HOST" "mkdir -p '$STAGE_DIR'"
+          scp $SSH_OPTS backend.tar.gz frontend.tar.gz app-frontend.tar.gz ai-workspace.tar.gz ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
+          scp $SSH_OPTS scripts/deploy_remote.sh ubuntu@"$DEPLOY_HOST":"$STAGE_DIR"/
+          ssh $SSH_OPTS ubuntu@"$DEPLOY_HOST" "bash '$STAGE_DIR/deploy_remote.sh' '$VERSION' '$STAGE_DIR' '$VERSION'"
