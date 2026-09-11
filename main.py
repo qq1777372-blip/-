@@ -675,7 +675,7 @@ def build_admin_user_avatar_url(user: AdminUser) -> str | None:
     if not user.avatar_path:
         return None
 
-    return f"/admin-users/{user.id}/avatar-file?v={int(datetime.utcnow().timestamp())}"
+    return f"/admin-users/{user.id}/avatar-file?v={Path(user.avatar_path).name}"
 
 
 def resolve_account_type(role: str) -> str:
@@ -815,8 +815,7 @@ def serialize_software_admin_user(user: AdminUser) -> dict[str, Any]:
 THUMBNAIL_CACHE_DIR = UPLOADS_DIR / ".thumbnails"
 THUMBNAIL_MAX_EDGE = 1280
 THUMBNAIL_QUALITY = 78
-# 只有超过这个大小才值得生成缩略图，小图直接回原文件
-THUMBNAIL_MIN_SOURCE_BYTES = 400_000
+THUMBNAIL_SIZE_BUCKETS = (96, 320, 720, 1280)
 
 
 def resolve_upload_file(relative_path: str) -> Path | None:
@@ -831,20 +830,33 @@ def resolve_upload_file(relative_path: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def build_image_thumbnail(source: Path) -> Path | None:
-    """生成并缓存 JPEG 缩略图；失败时返回 None 由调用方回退原图。"""
+def normalize_thumbnail_edge(requested: int | None) -> int:
+    value = max(1, min(int(requested or THUMBNAIL_MAX_EDGE), THUMBNAIL_MAX_EDGE))
+    return next((size for size in THUMBNAIL_SIZE_BUCKETS if size >= value), THUMBNAIL_MAX_EDGE)
+
+
+def build_image_thumbnail(
+    source: Path,
+    *,
+    max_edge: int = THUMBNAIL_MAX_EDGE,
+    image_format: str = "webp",
+    quality: int = THUMBNAIL_QUALITY,
+) -> Path | None:
+    """生成固定档位的 WebP/JPEG 缩略图；失败时由调用方回退原图。"""
     try:
         stat = source.stat()
     except OSError:
         return None
 
-    if stat.st_size < THUMBNAIL_MIN_SOURCE_BYTES:
-        return None
+    max_edge = normalize_thumbnail_edge(max_edge)
+    image_format = "jpeg" if image_format.lower() in {"jpg", "jpeg"} else "webp"
+    quality = max(55, min(int(quality), 88))
 
     token = hashlib.sha256(
-        f"{source}|{stat.st_mtime_ns}|{stat.st_size}|{THUMBNAIL_MAX_EDGE}|{THUMBNAIL_QUALITY}".encode("utf-8")
+        f"{source}|{stat.st_mtime_ns}|{stat.st_size}|{max_edge}|{image_format}|{quality}".encode("utf-8")
     ).hexdigest()[:32]
-    cached = THUMBNAIL_CACHE_DIR / f"{token}.jpg"
+    suffix = ".jpg" if image_format == "jpeg" else ".webp"
+    cached = THUMBNAIL_CACHE_DIR / f"{token}{suffix}"
     if cached.is_file():
         return cached
 
@@ -859,9 +871,12 @@ def build_image_thumbnail(source: Path) -> Path | None:
             image = ImageOps.exif_transpose(image)
             if image.mode not in ("RGB", "L"):
                 image = image.convert("RGB")
-            image.thumbnail((THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE), Image.LANCZOS)
+            image.thumbnail((max_edge, max_edge), Image.LANCZOS)
             temporary = cached.with_suffix(".tmp")
-            image.save(temporary, format="JPEG", quality=THUMBNAIL_QUALITY, optimize=True, progressive=True)
+            if image_format == "jpeg":
+                image.save(temporary, format="JPEG", quality=quality, optimize=True, progressive=True)
+            else:
+                image.save(temporary, format="WEBP", quality=quality, method=4)
             temporary.replace(cached)
     except Exception:
         logger.warning("Failed to build thumbnail for %s", source, exc_info=True)
@@ -870,16 +885,24 @@ def build_image_thumbnail(source: Path) -> Path | None:
     return cached if cached.is_file() else None
 
 
-def image_file_response(source: Path, download_name: str | None, *, thumbnail: bool) -> FileResponse:
+def image_file_response(
+    source: Path,
+    download_name: str | None,
+    *,
+    thumbnail: bool,
+    max_edge: int = THUMBNAIL_MAX_EDGE,
+    image_format: str = "webp",
+    quality: int = THUMBNAIL_QUALITY,
+) -> FileResponse:
     """thumbnail=True 时优先返回压缩图，无法生成则回退原图。"""
     if thumbnail:
-        reduced = build_image_thumbnail(source)
+        reduced = build_image_thumbnail(source, max_edge=max_edge, image_format=image_format, quality=quality)
         if reduced is not None:
             return FileResponse(
                 reduced,
-                media_type="image/jpeg",
+                media_type="image/jpeg" if reduced.suffix == ".jpg" else "image/webp",
                 content_disposition_type="inline",
-                headers={"Cache-Control": "private, max-age=604800"},
+                headers={"Cache-Control": "private, max-age=31536000, immutable"},
             )
 
     media_type, _ = mimetypes.guess_type(source.name)
@@ -888,7 +911,14 @@ def image_file_response(source: Path, download_name: str | None, *, thumbnail: b
         media_type=media_type or "application/octet-stream",
         filename=download_name or source.name,
         content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
     )
+
+
+def warm_image_thumbnails(source: Path) -> None:
+    """上传后预生成常用档位，避免首位浏览者承担实时压缩开销。"""
+    for size in THUMBNAIL_SIZE_BUCKETS:
+        build_image_thumbnail(source, max_edge=size, image_format="webp", quality=76)
 
 
 def mask_account_name(value: str | None) -> str:
@@ -4628,18 +4658,40 @@ def patch_category_rule_package(
     }
 
 
-def load_category_rule_catalog_payload() -> dict[str, Any]:
+def load_category_rule_catalog_payload(
+    page: int = 1,
+    page_size: int = 100,
+    keyword: str = "",
+    platform: str = "",
+    fetch_status: str = "",
+) -> dict[str, Any]:
     db_path = get_rule_catalog_db_path()
     if not db_path.exists():
         raise HTTPException(status_code=503, detail="Rule catalog is not configured")
 
-    cached_payload = get_cached_rule_catalog_payload(db_path)
+    page = max(1, int(page or 1))
+    page_size = min(500, max(1, int(page_size or 100)))
+    keyword = str(keyword or "").strip()
+    platform = normalize_rule_platform(platform) if platform else ""
+    fetch_status = str(fetch_status or "").strip().lower()
+    cached_payload = get_cached_rule_catalog_payload(db_path) if not (keyword or platform or fetch_status or page != 1 or page_size != 100) else None
     if cached_payload is not None:
         return cached_payload
 
     try:
         with sqlite3.connect(str(db_path)) as connection:
             connection.row_factory = sqlite3.Row
+            where: list[str] = []
+            params: list[Any] = []
+            if platform:
+                where.append("cr.platform = ?"); params.append(platform)
+            if fetch_status:
+                where.append("COALESCE(cr.fetch_status, 'unfetched') = ?"); params.append(fetch_status)
+            if keyword:
+                where.append("(cr.category_id LIKE ? OR cr.category_name LIKE ? OR cr.platform LIKE ?)")
+                like = f"%{keyword}%"; params.extend([like, like, like])
+            where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+            total = connection.execute(f"SELECT COUNT(*) FROM category_rules cr {where_sql}", params).fetchone()[0]
             rows = connection.execute(
                 """
                 SELECT cr.platform, cr.category_id, cr.category_name, cr.has_explicit_package,
@@ -4649,12 +4701,13 @@ def load_category_rule_catalog_payload() -> dict[str, Any]:
                 FROM category_rules cr
                 LEFT JOIN category_name_dictionary d
                     ON d.platform = cr.platform AND d.category_id = cr.category_id
+                {where_sql}
                 ORDER BY
                     CASE lower(cr.platform) WHEN 'taobao' THEN 0 WHEN 'tmall' THEN 1 ELSE 2 END,
                     CAST(cr.category_id AS INTEGER),
                     cr.category_id
-                """
-            ).fetchall()
+                LIMIT ? OFFSET ?
+                """.format(where_sql=where_sql), params + [page_size, (page - 1) * page_size]).fetchall()
     except sqlite3.Error as exc:
         raise HTTPException(status_code=503, detail="Rule catalog is unavailable") from exc
 
@@ -4700,7 +4753,10 @@ def load_category_rule_catalog_payload() -> dict[str, Any]:
     payload = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "database_path": str(db_path),
-        "record_count": len(categories),
+        "record_count": int(total),
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (int(total) + page_size - 1) // page_size,
         "customized_count": customized_count,
         "categories": categories,
     }
@@ -5070,6 +5126,7 @@ async def store_saved_link_image(record: SavedLink, upload: UploadFile) -> dict[
     filename = f"saved_link_{record.id}_{secrets.token_hex(8)}{suffix}"
     save_path = LINK_UPLOAD_DIR / filename
     save_path.write_bytes(content)
+    warm_image_thumbnails(save_path)
     return {
         "path": f"links/{filename}",
         "name": upload.filename,
@@ -5112,6 +5169,7 @@ async def save_admin_avatar(user: AdminUser, upload: UploadFile) -> None:
     filename = f"avatar_{user.id}_{secrets.token_hex(8)}{suffix}"
     save_path = AVATAR_UPLOAD_DIR / filename
     save_path.write_bytes(content)
+    warm_image_thumbnails(save_path)
 
     user.avatar_path = f"avatars/{filename}"
     user.avatar_name = upload.filename
@@ -5626,6 +5684,8 @@ app.include_router(
         timezone=TASK_BOOKKEEPING_TIMEZONE,
         uploads_dir=UPLOADS_DIR,
         product_upload_dir=WAREHOUSE_PRODUCT_UPLOAD_DIR,
+        image_file_response=image_file_response,
+        warm_image_thumbnails=warm_image_thumbnails,
     ),
 )
 app.include_router(
@@ -6773,9 +6833,14 @@ def software_me(current_user: AdminUser = Depends(get_current_software_user_allo
     summary="Fetch the server publish category rule catalog",
 )
 def software_get_rule_catalog(
+    page: int = 1,
+    page_size: int = 100,
+    keyword: str = "",
+    platform: str = "",
+    fetch_status: str = "",
     current_user: AdminUser = Depends(get_current_rule_catalog_maintainer),
 ):
-    return load_category_rule_catalog_payload()
+    return load_category_rule_catalog_payload(page, page_size, keyword, platform, fetch_status)
 
 
 @app.get(
@@ -7724,7 +7789,13 @@ def update_current_user_profile(
     "/auth/me/avatar-file",
     summary="Download current admin avatar",
 )
-def get_current_user_avatar_file(current_user: AdminUser = Depends(get_current_user)):
+def get_current_user_avatar_file(
+    thumb: int = 0,
+    width: int = 96,
+    format: str = "webp",
+    quality: int = 76,
+    current_user: AdminUser = Depends(get_current_user),
+):
     if not current_user.avatar_path:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
@@ -7738,12 +7809,13 @@ def get_current_user_avatar_file(current_user: AdminUser = Depends(get_current_u
     if not image_file.is_file():
         raise HTTPException(status_code=404, detail="Avatar not found")
 
-    media_type, _ = mimetypes.guess_type(image_file.name)
-    return FileResponse(
+    return image_file_response(
         image_file,
-        media_type=media_type or "application/octet-stream",
-        filename=current_user.avatar_name or image_file.name,
-        content_disposition_type="inline",
+        current_user.avatar_name or image_file.name,
+        thumbnail=bool(thumb),
+        max_edge=width,
+        image_format=format,
+        quality=quality,
     )
 
 
@@ -7753,6 +7825,10 @@ def get_current_user_avatar_file(current_user: AdminUser = Depends(get_current_u
 )
 def get_admin_user_avatar_file(
     user_id: int,
+    thumb: int = 0,
+    width: int = 96,
+    format: str = "webp",
+    quality: int = 76,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("viewer")),
 ):
@@ -7770,12 +7846,13 @@ def get_admin_user_avatar_file(
     if not image_file.is_file():
         raise HTTPException(status_code=404, detail="Avatar not found")
 
-    media_type, _ = mimetypes.guess_type(image_file.name)
-    return FileResponse(
+    return image_file_response(
         image_file,
-        media_type=media_type or "application/octet-stream",
-        filename=user.avatar_name or image_file.name,
-        content_disposition_type="inline",
+        user.avatar_name or image_file.name,
+        thumbnail=bool(thumb),
+        max_edge=width,
+        image_format=format,
+        quality=quality,
     )
 
 
@@ -8287,6 +8364,9 @@ def get_saved_link_image_file(
     link_id: int,
     image_name: str,
     thumb: int = 0,
+    width: int = 720,
+    format: str = "webp",
+    quality: int = 76,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(require_role("viewer")),
 ):
@@ -8312,6 +8392,9 @@ def get_saved_link_image_file(
         image_file,
         str(image_entry.get("name") or image_file.name),
         thumbnail=bool(thumb),
+        max_edge=width,
+        image_format=format,
+        quality=quality,
     )
 
 
