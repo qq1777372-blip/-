@@ -245,6 +245,8 @@ def create_warehouse_router(
     timezone: ZoneInfo,
     uploads_dir: Path,
     product_upload_dir: Path,
+    image_file_response: Callable[..., Any],
+    warm_image_thumbnails: Callable[[Path], None],
 ) -> APIRouter:
     """Build the warehouse router.
 
@@ -382,6 +384,10 @@ def create_warehouse_router(
     @router.get("/warehouse/products/{product_id}/image-file", summary="View warehouse product image")
     def get_warehouse_product_image_file(
         product_id: int,
+        thumb: int = 0,
+        width: int = 320,
+        format: str = "webp",
+        quality: int = 76,
         db: Session = Depends(get_db),
         _: AdminUser = Depends(require_role("viewer")),
     ):
@@ -395,8 +401,14 @@ def create_warehouse_router(
             raise HTTPException(status_code=404, detail="商品图片不存在") from exc
         if not image_file.is_file():
             raise HTTPException(status_code=404, detail="商品图片不存在")
-        media_type, _ = mimetypes.guess_type(image_file.name)
-        return FileResponse(image_file, media_type=media_type or "application/octet-stream", filename=record.image_name or image_file.name, content_disposition_type="inline")
+        return image_file_response(
+            image_file,
+            record.image_name or image_file.name,
+            thumbnail=bool(thumb),
+            max_edge=width,
+            image_format=format,
+            quality=quality,
+        )
 
     @router.post("/warehouse/products/{product_id}/image", response_model=WarehouseProductResponse, summary="Upload warehouse product image")
     async def upload_warehouse_product_image(
@@ -412,6 +424,8 @@ def create_warehouse_router(
             uploads_dir=uploads_dir,
             product_upload_dir=product_upload_dir,
         )
+        if record.image_path:
+            warm_image_thumbnails(uploads_dir / record.image_path)
         write_audit_log(db, actor=current_user, action="warehouse_product_image_updated", resource_type="warehouse_product", resource_id=record.id)
         commit_session(db, default_detail="商品图片保存失败")
         db.refresh(record)
