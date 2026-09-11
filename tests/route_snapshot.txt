@@ -222,3 +222,4 @@ PUT /ui-settings/{setting_key}
 PUT /warehouse/inbound-orders/{order_id}
 PUT /warehouse/products/{product_id}
 PUT /warehouse/warehouses/{warehouse_id}
+GET /dingtalk-profits/daily-summary
