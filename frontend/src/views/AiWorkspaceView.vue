@@ -74,6 +74,7 @@ const folderFilter = ref("");
 const prompt = ref("");
 const sending = ref(false);
 const activeRequest = ref<AbortController | null>(null);
+const requestConversationId = ref("");
 const sidebarSearch = ref("");
 const globalSearchVisible = ref(false);
 const globalSearch = ref("");
@@ -177,10 +178,17 @@ const filteredConversations = computed(() => {
       Boolean(item.archived) === showArchived.value &&
       (!folderFilter.value || item.folder === folderFilter.value),
   );
-  return keyword
-    ? visible.filter((item) => item.title.toLowerCase().includes(keyword))
-    : visible;
+  const filtered = keyword ? visible.filter((item) => item.title.toLowerCase().includes(keyword)) : visible;
+  return [...filtered].sort((a, b) => conversationLastTime(b) - conversationLastTime(a));
 });
+
+function formatConversationTime(value: number) {
+  const date = new Date(value), now = new Date();
+  return date.toDateString() === now.toDateString()
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
+}
+function conversationLastTime(chat: Conversation) { const last = chat.messages[chat.messages.length - 1] as (Message & { created_at?: number }) | undefined; return Number(last?.createdAt || (last?.created_at ? last.created_at * 1000 : 0) || chat.updatedAt || chat.createdAt); }
 const markdown = new MarkdownIt({ html: false, breaks: true, linkify: true });
 const promptMatches = computed(() => {
   if (!prompt.value.startsWith("/")) return [];
@@ -240,10 +248,15 @@ function openSearchConversation(item: Record<string, unknown>) {
 }
 
 function saveConversations() {
-  localStorage.setItem(
-    storageKey.value,
-    JSON.stringify(conversations.value.slice(0, 100)),
-  );
+  try {
+    localStorage.setItem(storageKey.value, JSON.stringify(conversations.value.slice(0, 30)));
+  } catch (error) {
+    // Storage quota must never abort an in-flight AI request.
+    try {
+      localStorage.removeItem(`${storageKey.value}:folders`);
+      localStorage.setItem(storageKey.value, JSON.stringify(conversations.value.slice(0, 10)));
+    } catch { /* server sync remains the source of truth */ }
+  }
   void syncConversations();
 }
 
@@ -263,6 +276,7 @@ async function syncConversations() {
           parent_chat_id: chat.parentChatId || "",
           model_id: chat.modelId || "",
           created_at: Math.floor(chat.createdAt / 1000),
+          updated_at: Math.floor(chat.updatedAt / 1000),
         }),
       }).catch(() => null),
     ),
@@ -298,11 +312,14 @@ async function loadServerConversations() {
         createdAt: chat.created_at * 1000,
         updatedAt: chat.updated_at * 1000,
       }));
-      activeId.value = conversations.value[0].id;
-      localStorage.setItem(
-        storageKey.value,
-        JSON.stringify(conversations.value),
-      );
+      const currentId = activeId.value;
+      activeId.value = conversations.value.some((chat) => chat.id === currentId) ? currentId : conversations.value[0].id;
+      try {
+        localStorage.setItem(storageKey.value, JSON.stringify(conversations.value.slice(0, 30)));
+      } catch {
+        // The server copy is authoritative; a full browser cache must not
+        // interrupt loading or change the active conversation.
+      }
     } else {
       await syncConversations();
     }
@@ -316,7 +333,11 @@ function loadConversations() {
   } catch {
     conversations.value = [];
   }
-  if (conversations.value.length) activeId.value = conversations.value[0].id;
+  if (conversations.value.length) {
+    const rememberedId = localStorage.getItem(`${storageKey.value}:active-id`) || "";
+    const currentId = activeId.value || rememberedId;
+    activeId.value = conversations.value.some((chat) => chat.id === currentId) ? currentId : conversations.value[0].id;
+  }
   else createConversation();
 }
 
@@ -807,10 +828,13 @@ async function sendPrompt(text = prompt.value) {
     conversation.title = question.slice(0, 24);
   conversation.updatedAt = now;
   sending.value = true;
+  requestConversationId.value = conversation.id;
   saveConversations();
   await scrollBottom();
   try {
     if (imageMode.value) {
+      const imageAbort = new AbortController();
+      activeRequest.value = imageAbort;
       const assistant: Message = {
         id: uid("assistant"),
         role: "assistant",
@@ -823,6 +847,7 @@ async function sendPrompt(text = prompt.value) {
       );
       const result = await knowledgeApi<{ url: string }>("images/generations", {
         method: "POST",
+        signal: imageAbort.signal,
         body: JSON.stringify({
           prompt: question,
           model_id: activeModel ? selectedModelId.value : undefined,
@@ -832,6 +857,10 @@ async function sendPrompt(text = prompt.value) {
       });
       assistant.content = "";
       assistant.imageUrl = result.url;
+      // Persist the completed image turn before returning.  The initial save
+      // is fire-and-forget; a concurrent server refresh could otherwise
+      // replace this local message with the stale conversation.
+      await syncConversations();
       return;
     }
     let sources: KnowledgeDocument[] = [];
@@ -955,6 +984,7 @@ async function sendPrompt(text = prompt.value) {
   } finally {
     conversation.updatedAt = Date.now();
     sending.value = false;
+    requestConversationId.value = "";
     activeRequest.value = null;
     saveConversations();
     await scrollBottom();
@@ -963,6 +993,10 @@ async function sendPrompt(text = prompt.value) {
 
 function stopGeneration() {
   activeRequest.value?.abort();
+  // End the UI task immediately; the upstream request may still be closing.
+  sending.value = false;
+  requestConversationId.value = "";
+  activeRequest.value = null;
 }
 
 function copyMessage(content: string) {
@@ -1225,6 +1259,7 @@ async function importFiles(event: Event) {
 }
 
 watch(activeId, () => {
+  if (activeId.value) localStorage.setItem(`${storageKey.value}:active-id`, activeId.value);
   pendingImages.value = [];
   pendingFileIds.value = [];
   const rememberedId = activeConversation.value?.modelId;
@@ -1327,7 +1362,7 @@ onMounted(async () => {
           <el-icon><ChatDotRound /></el-icon
           ><span
             ><b>{{ chat.title }}</b
-            ><small>{{ chat.messages.length }} 条消息</small></span
+            ><small>{{ chat.messages.length }} 条消息 · {{ formatConversationTime(conversationLastTime(chat)) }}</small></span
           >
           <i class="chat-actions"
             ><span
@@ -1530,7 +1565,7 @@ onMounted(async () => {
             </div>
           </div>
         </article>
-        <article v-if="sending" class="message assistant">
+        <article v-if="sending && requestConversationId === activeId" class="message assistant">
           <div class="message-avatar">AI</div>
           <div class="message-body typing"><i></i><i></i><i></i></div>
         </article>
@@ -1701,7 +1736,7 @@ onMounted(async () => {
             ><el-button round @click="prompt = '/'">/ Prompt</el-button>
           </div>
           <button
-            v-if="sending"
+            v-if="sending && requestConversationId === activeId"
             class="send-button stop-button"
             type="button"
             aria-label="停止生成"

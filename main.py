@@ -3663,7 +3663,9 @@ def extract_rule_size_mapping_package(root: dict[str, Any]) -> dict[str, Any]:
         get_rule_nested_value(root, "models", "formValues", "sizeMapping", "sizeTabRequired")
     )
 
-    data_source = get_rule_nested_value(root, "components", "sizeModelTry", "props", "dataSource")
+    # The sizeMapping detail endpoint is merged into this path by the client.
+    # sizeModelTry is model fitting data and must never be used as a product chart.
+    data_source = get_rule_nested_value(root, "components", "sizeMapping", "props", "value", "column")
     field_specs: list[str] = []
     if isinstance(data_source, list):
         for field in data_source:
@@ -3671,7 +3673,7 @@ def extract_rule_size_mapping_package(root: dict[str, Any]) -> dict[str, Any]:
                 continue
             if not get_rule_json_bool(field.get("required")):
                 continue
-            if get_rule_json_text(field.get("uiType")).strip().lower() != "number":
+            if get_rule_json_text(field.get("uiType")).strip().lower() not in {"number", "input"}:
                 continue
 
             name = get_rule_json_text(field.get("name")).strip()
@@ -3709,6 +3711,8 @@ def merge_rule_objects(current: Any, imported: Any) -> dict[str, Any]:
     merged = dict(current) if isinstance(current, dict) else {}
     if isinstance(imported, dict):
         for key, value in imported.items():
+            if key == "sizeMappingFields" and isinstance(value, str) and not value.strip():
+                continue
             if value is not None:
                 merged[key] = value
     return merged
@@ -3931,6 +3935,10 @@ def build_rule_catalog_summary(rule: dict[str, Any], has_explicit_package: bool)
         "force_single_size_mapping": get_rule_bool(package_payload.get("forceSingleSizeMapping")),
         "size_mapping_template_id": get_rule_text(package_payload.get("sizeMappingTemplateId")),
         "size_mapping_fields": get_rule_text(package_payload.get("sizeMappingFields")),
+        "size_mapping_required": (
+            get_rule_json_bool(package_payload.get("forceSingleSizeMapping"))
+            or get_rule_json_bool(package_payload.get("useHeightWeightChestSizeMapping"))
+        ),
         "use_simple_enum_size_sale_prop": get_rule_bool(package_payload.get("useSimpleEnumSizeSaleProp")),
         "use_height_weight_chest_size_mapping": get_rule_bool(package_payload.get("useHeightWeightChestSizeMapping")),
         "require_vertical_guide_image": get_rule_bool(package_payload.get("requireVerticalGuideImage")),
@@ -3975,6 +3983,7 @@ def compact_rule_catalog_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "force_single_size_mapping": get_rule_bool(summary.get("force_single_size_mapping")),
         "size_mapping_template_id": get_rule_text(summary.get("size_mapping_template_id")),
         "size_mapping_fields": truncate_rule_catalog_text(summary.get("size_mapping_fields"), 500),
+        "size_mapping_required": bool(summary.get("size_mapping_required")),
         "use_simple_enum_size_sale_prop": get_rule_bool(summary.get("use_simple_enum_size_sale_prop")),
         "use_height_weight_chest_size_mapping": get_rule_bool(summary.get("use_height_weight_chest_size_mapping")),
         "require_vertical_guide_image": get_rule_bool(summary.get("require_vertical_guide_image")),

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import MarkdownIt from "markdown-it";
@@ -265,7 +265,7 @@ async function send(text = prompt.value) {
     if (imageMode.value) {
       const assistant: Message = { id: `assistant-${uid()}`, role: "assistant", content: "正在生成图片…" };
       chat.messages.push(assistant);
-      const result = await api<{ url: string }>("images/generations", { method: "POST", body: JSON.stringify({ prompt: question, model_id: selectedModelId.value || undefined, size: imageSize.value }) });
+      const result = await api<{ url: string }>("images/generations", { method: "POST", body: JSON.stringify({ prompt: question, image_urls: attachedImages, model_id: selectedModelId.value || undefined, size: imageSize.value }) });
       assistant.content = ""; assistant.imageUrl = result.url; return;
     }
     let documents: Source[] = [];
@@ -318,7 +318,12 @@ async function send(text = prompt.value) {
   } finally { chat.updatedAt = Date.now(); sending.value = false; activeRequest.value = null; save(); await scrollBottom(); }
 }
 
-function stopGeneration() { activeRequest.value?.abort(); }
+function stopGeneration() {
+  activeRequest.value?.abort();
+  // Do not keep the composer locked while an upstream request is unwinding.
+  sending.value = false;
+  activeRequest.value = null;
+}
 
 function editMessage(msg: Message) {
   dialogMessage = msg;
@@ -926,3 +931,4 @@ onIonViewDidEnter(() => { window.setTimeout(() => void scrollBottom(0), 0); });
 
 .ion-palette-dark .starter, .ion-palette-dark .ai-composer { box-shadow: none; }
 </style>
+

@@ -67,8 +67,15 @@ const dailyChart = computed(() => {
   if (!rows.length) return { line: '', area: '', points: [], labels: [] as string[] }
   const max = Math.max(...rows.map((row) => Math.abs(row.total_profit)), 1)
   const points = rows.map((row, index) => [index * (720 / Math.max(rows.length - 1, 1)), 184 - (Math.max(row.total_profit, 0) / max) * 140] as const)
-  const line = points.map(([x, y]) => `${x},${y}`).join(' ')
-  return { line, area: `${line} 720,220 0,220`, points, labels: rows.map((row) => row.date.slice(5)) }
+  const line = points.length === 1
+    ? `M${points[0][0]},${points[0][1]}`
+    : points.slice(1).reduce((path, [x, y], index) => {
+        const [px, py] = points[index]
+        const mx = (px + x) / 2
+        return `${path} Q${mx},${py} ${x},${y}`
+      }, `M${points[0][0]},${points[0][1]}`)
+  const area = `${line} L720,220 L0,220 Z`
+  return { line, area, points, labels: rows.map((row) => row.date.slice(5)) }
 })
 const serverLoading = ref(false)
 const serverStatus = ref<ServerStatus | null>(null)
@@ -648,12 +655,12 @@ onMounted(() => {
 
           <div v-if="!props.serverOnly" class="dashboard-charts">
             <section class="chart-card chart-card--trend">
-              <div class="chart-card__head"><div><h3>钉钉利润趋势</h3><p>按报表日期汇总每日利润</p></div><select v-model.number="profitRangeDays" class="chart-select" aria-label="选择利润趋势时间范围"><option :value="7">近 7 天</option><option :value="14">近 14 天</option><option :value="30">近 30 天</option></select></div>
+              <div class="chart-card__head"><div class="chart-title"><span class="chart-icon">↗</span><div><h3>钉钉利润趋势</h3><p>按报表日期汇总每日利润</p></div></div><select v-model.number="profitRangeDays" class="chart-select" aria-label="选择利润趋势时间范围"><option :value="7">近 7 天</option><option :value="14">近 14 天</option><option :value="30">近 30 天</option></select></div>
               <svg class="trend-chart" viewBox="0 0 720 220" preserveAspectRatio="none" aria-label="经营趋势图">
                 <defs><linearGradient id="trendFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#3b82f6" stop-opacity=".2"/><stop offset="1" stop-color="#3b82f6" stop-opacity="0"/></linearGradient></defs>
                 <path d="M0 178 H720 M0 124 H720 M0 70 H720" class="chart-gridline"/>
-                <path v-if="dailyChart.area" :d="`M${dailyChart.area}`" fill="url(#trendFill)"/>
-                <polyline v-if="dailyChart.line" :points="dailyChart.line" class="chart-line"/>
+                <path v-if="dailyChart.area" :d="dailyChart.area" fill="none"/>
+                <path v-if="dailyChart.line" :d="dailyChart.line" class="chart-line"/>
                 <g v-for="(point, index) in dailyChart.points" :key="point[0]" class="chart-point" @mouseenter="activeProfitPoint = index" @mouseleave="activeProfitPoint = null" @click="activeProfitPoint = index" tabindex="0" @focus="activeProfitPoint = index">
                   <circle :cx="point[0]" :cy="point[1]" r="13" class="chart-hit"/>
                   <circle :cx="point[0]" :cy="point[1]" r="4" class="chart-dot"/>
@@ -1985,21 +1992,23 @@ onMounted(() => {
 
 .dashboard-charts { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, .9fr); gap: 14px; padding: 0 0 2px; width: 100%; min-width: 0; box-sizing: border-box; }
 .chart-card { position: relative; min-width: 0; padding: 18px 20px 14px; border: 1px solid #edf0f5; border-radius: 12px; background: #fff; box-shadow: 0 5px 18px rgba(31,42,68,.045); }
-.chart-card__head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom: 12px; }
+.chart-card__head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 12px; }
+.chart-title { display:flex; align-items:center; gap:10px; }
+.chart-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:9px; color:#2563eb; background:linear-gradient(135deg,#dbeafe,#eff6ff); font-size:19px; font-weight:800; box-shadow:inset 0 0 0 1px #bfdbfe; }
 .chart-card h3 { margin:0; color:#273247; font-size:15px; }
 .chart-card p { margin:5px 0 0; color:#98a1b2; font-size:12px; }
 .chart-select { min-height:32px; padding:6px 10px; border:1px solid #e7ebf2; border-radius:6px; background:#fff; color:#68748a; font:inherit; font-size:12px; cursor:pointer; outline:none; }
 .chart-select:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.14); }
 .trend-chart { display:block; width:100%; height:190px; overflow:visible; }
-.chart-gridline { fill:none; stroke:#edf0f5; stroke-width:1; }
-.chart-line { fill:none; stroke:#3b82f6; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+.chart-gridline { fill:none; stroke:#e9edf3; stroke-width:1; stroke-dasharray:2 4; }
+.chart-line { fill:none; stroke:#45b7ee; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
 .chart-line { stroke-dasharray: 1100; stroke-dashoffset: 1100; animation: chart-draw 900ms ease-out forwards; }
-.chart-dot { fill:#fff; stroke:#3b82f6; stroke-width:3; transition: r 160ms ease, stroke-width 160ms ease; }
+.chart-dot { fill:#fff; stroke:#45b7ee; stroke-width:3; transition: r 160ms ease, stroke-width 160ms ease; }
 .chart-point { cursor: pointer; outline: none; }
 .chart-point:hover .chart-dot, .chart-point:focus .chart-dot { r: 6; stroke-width: 4; }
 .chart-hit { fill: transparent; }
-.chart-tooltip { position: absolute; z-index: 3; display: grid; gap: 3px; margin: -138px 0 0 46%; padding: 9px 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #fff; box-shadow: 0 8px 22px rgba(30,64,175,.16); color: #475569; font-size: 11px; pointer-events: none; }
-.chart-tooltip strong { color: #1e3a8a; font-size: 12px; }
+.chart-tooltip { position: absolute; z-index: 3; display: grid; gap: 3px; margin: -138px 0 0 46%; padding: 10px 13px; border: 0; border-radius: 8px; background: #202124; box-shadow: 0 8px 22px rgba(15,23,42,.22); color: #f8fafc; font-size: 11px; pointer-events: none; }
+.chart-tooltip strong { color: #fff; font-size: 12px; }
 @keyframes chart-draw { to { stroke-dashoffset: 0; } }
 .chart-labels { display:flex; justify-content:space-between; color:#a0a8b6; font-size:11px; }
 .donut-wrap { display:flex; align-items:center; justify-content:center; gap:26px; min-height:210px; }

@@ -1080,7 +1080,8 @@ class Handler(BaseHTTPRequestHandler):
                 messages = data.get("messages", [])
                 if not chat_id or not isinstance(messages, list): raise ValueError("会话数据不正确")
                 created_at = int(data.get("created_at") or now)
-                connection.execute("INSERT INTO chats(id,user_id,title,messages,folder,archived,model_id,favorite,parent_chat_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,messages=excluded.messages,folder=excluded.folder,archived=excluded.archived,model_id=excluded.model_id,favorite=excluded.favorite,parent_chat_id=excluded.parent_chat_id,updated_at=excluded.updated_at", (chat_id, user_id, title, json.dumps(messages, ensure_ascii=False), str(data.get("folder", "")), 1 if data.get("archived", False) else 0, str(data.get("model_id", "")), 1 if data.get("favorite", False) else 0, str(data.get("parent_chat_id", "")), created_at, now)); connection.commit(); json_response(self, 200, {"ok": True})
+                updated_at = int(data.get("updated_at") or now)
+                connection.execute("INSERT INTO chats(id,user_id,title,messages,folder,archived,model_id,favorite,parent_chat_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,messages=excluded.messages,folder=excluded.folder,archived=excluded.archived,model_id=excluded.model_id,favorite=excluded.favorite,parent_chat_id=excluded.parent_chat_id,updated_at=excluded.updated_at", (chat_id, user_id, title, json.dumps(messages, ensure_ascii=False), str(data.get("folder", "")), 1 if data.get("archived", False) else 0, str(data.get("model_id", "")), 1 if data.get("favorite", False) else 0, str(data.get("parent_chat_id", "")), created_at, updated_at)); connection.commit(); json_response(self, 200, {"ok": True})
             elif self.path == "/api/chats/delete":
                 connection.execute("DELETE FROM chats WHERE id=? AND user_id=?", (str(data.get("id", "")), self.identity()[0])); connection.commit(); json_response(self, 200, {"ok": True})
             elif self.path == "/api/chats/search":
@@ -1494,6 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = {"prompt": prompt_text, "model": selected_model["base_model"] if selected_model else setting("model", "gpt-image-1"), "size": str(data.get("size", "1024x1024")), "n": 1}
                 reference_images = data.get("image_urls", []) if isinstance(data.get("image_urls", []), list) else []
                 reference_image = str(reference_images[0]) if reference_images else ""
+                print(f"[image] request reference={bool(reference_image)} images={len(reference_images)} model={payload['model']}", flush=True)
                 if reference_image:
                     match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,(.+)", reference_image, re.DOTALL)
                     if not match: raise ValueError("参考图格式无效，仅支持 PNG、JPG 或 WebP")
@@ -1501,7 +1503,11 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as error: raise ValueError("参考图数据损坏") from error
                     if len(image_raw) > 15_000_000: raise ValueError("参考图不能超过 15MB")
                     suffix = "jpg" if match.group(1) == "image/jpeg" else match.group(1).split("/", 1)[1]
-                    request_body, boundary = multipart_file(payload, "image", "reference." + suffix, image_raw, match.group(1))
+                    # Most OpenAI-compatible gateways use `image[]`; some
+                    # older gateways only accept the singular `image`. Keep
+                    # both request forms available for the retry below.
+                    request_body, boundary = multipart_file({**payload, "response_format": "b64_json"}, "image", "reference." + suffix, image_raw, match.group(1))
+                    fallback_body, fallback_boundary = multipart_file(payload, "image", "reference." + suffix, image_raw, match.group(1))
                     endpoint = provider_base + "/images/edits"
                     content_type = "multipart/form-data; boundary=" + boundary
                 else:
@@ -1510,12 +1516,46 @@ class Handler(BaseHTTPRequestHandler):
                     content_type = "application/json"
                 request = urllib.request.Request(endpoint, data=request_body, headers={"Content-Type": content_type, "Authorization": "Bearer " + api_key, "User-Agent": "RuoShopAdmin/1.0"}, method="POST")
                 try:
-                    with urllib.request.urlopen(request, timeout=180) as response:
+                    # Async edit submission must return a task id promptly;
+                    # the long generation time belongs to the polling phase.
+                    with urllib.request.urlopen(request, timeout=30 if reference_image else 180) as response:
                         result = json.loads(response.read().decode("utf-8"))
                 except urllib.error.HTTPError as error:
                     detail = error.read().decode("utf-8", errors="replace")[:2000]
-                    action = "图生图" if reference_image else "图片生成"
-                    raise ValueError(f"{action}供应商返回 HTTP {error.code}: {detail or error.reason}") from error
+                    if reference_image and error.code == 400:
+                        # Retry once for gateways that reject the array field.
+                        request = urllib.request.Request(
+                            endpoint,
+                            data=fallback_body,
+                            headers={"Content-Type": "multipart/form-data; boundary=" + fallback_boundary, "Authorization": "Bearer " + api_key, "User-Agent": "RuoShopAdmin/1.0"},
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(request, timeout=180) as response:
+                            result = json.loads(response.read().decode("utf-8"))
+                    else:
+                        action = "图生图" if reference_image else "图片生成"
+                        raise ValueError(f"{action}供应商返回 HTTP {error.code}: {detail or error.reason}") from error
+                # Sub2API returns a task for async image edits. Poll until it
+                # exposes the same OpenAI-style data payload.
+                if reference_image:
+                    task_id = str(result.get("task_id") or result.get("id") or result.get("task", {}).get("id", ""))
+                    if task_id and not result.get("data"):
+                        status_endpoint = provider_base + "/images/tasks/" + urllib.parse.quote(task_id, safe="")
+                        unknown_rounds = 0
+                        for _ in range(300):
+                            time.sleep(2)
+                            status_request = urllib.request.Request(status_endpoint, headers={"Authorization": "Bearer " + api_key, "User-Agent": "RuoShopAdmin/1.0"})
+                            with urllib.request.urlopen(status_request, timeout=30) as status_response:
+                                status = json.loads(status_response.read().decode("utf-8"))
+                            result = status.get("result") if isinstance(status.get("result"), dict) else status
+                            state = str(result.get("status") or result.get("state") or result.get("task_status") or "").lower()
+                            if result.get("data") or state in ("succeeded", "success", "completed", "failed", "error", "cancelled", "canceled"):
+                                break
+                            unknown_rounds += 1
+                            if unknown_rounds >= 20:
+                                raise ValueError("图生图任务状态无法识别：" + json.dumps(result, ensure_ascii=False)[:500])
+                        if state in ("failed", "error", "cancelled", "canceled"):
+                            raise ValueError("图生图任务失败：" + str(result.get("error") or result.get("message") or result.get("status")))
                 item = (result.get("data") or [{}])[0]
                 image_url = item.get("url", "")
                 if not image_url and item.get("b64_json"):
