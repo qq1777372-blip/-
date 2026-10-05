@@ -61,9 +61,9 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertTrue(self.request("search", {"query": "售后", "knowledge_id": knowledge_id})["documents"])
 
         self.request("chats/save", {"id": "chat-1", "user_id": "user-1", "title": "测试会话", "messages": [{"role": "user", "content": "你好"}]})
-        self.assertEqual(len(self.request("chats?user_id=user-1")["chats"]), 1)
+        self.assertTrue(any(chat["id"] == "chat-1" for chat in self.request("chats?user_id=user-1")["chats"]))
         self.request("chats/delete", {"id": "chat-1", "user_id": "user-1"})
-        self.assertEqual(len(self.request("chats?user_id=user-1")["chats"]), 0)
+        self.assertFalse(any(chat["id"] == "chat-1" for chat in self.request("chats?user_id=user-1")["chats"]))
 
         self.request("files/delete", {"id": uploaded["id"]})
         self.assertFalse(server.FILES.joinpath(f"{uploaded['id']}-rules.txt").exists())
@@ -109,7 +109,8 @@ class WorkspaceApiTest(unittest.TestCase):
         with patch.object(server, "fetch_provider_model_ids", return_value=["model-a", "model-b"]):
             first = self.request("models/sync", {})
             second = self.request("models/sync", {})
-        self.assertEqual(first, {"ok": True, "total": 2, "added": 2})
+        self.assertEqual({key: first[key] for key in ("ok", "total", "added")}, {"ok": True, "total": 2, "added": 2})
+        self.assertEqual(first.get("errors", []), [])
         self.assertEqual(second["added"], 0)
         models = self.request("models")["models"]
         self.assertEqual({item["base_model"] for item in models}, {"model-a", "model-b"})
@@ -121,6 +122,70 @@ class WorkspaceApiTest(unittest.TestCase):
         self.assertTrue(docx.startswith(b"PK"))
         self.assertTrue(xlsx.startswith(b"PK"))
         self.assertTrue(pdf.startswith(b"%PDF"))
+
+    def test_image_edit_forwards_every_reference_image(self):
+        captured = []
+
+        class ImageProvider(server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                captured.append((self.path, self.headers.get("Content-Type", ""), self.rfile.read(int(self.headers["Content-Length"]))))
+                body = json.dumps({"data": [{"url": "https://example.invalid/generated.png"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        provider = server.ThreadingHTTPServer(("127.0.0.1", 0), ImageProvider)
+        thread = threading.Thread(target=provider.serve_forever, daemon=True)
+        thread.start()
+        connection_id = "test-multi-image-connection"
+        try:
+            self.request("connections/save", {
+                "id": connection_id,
+                "name": "Multi-image test provider",
+                "base_url": f"http://127.0.0.1:{provider.server_address[1]}/v1",
+                "api_key": "test-key",
+                "sync_models": False,
+            })
+            model_id = self.request("models", {
+                "name": "Multi-image test model",
+                "base_model": "gpt-image-2",
+                "model_type": "image",
+                "connection_id": connection_id,
+            })["id"]
+            first, second = b"first-reference", b"second-reference"
+            response = self.request("images/generations", {
+                "prompt": "Combine both references",
+                "model_id": model_id,
+                "image_urls": [
+                    "data:image/png;base64," + base64.b64encode(first).decode(),
+                    "data:image/webp;base64," + base64.b64encode(second).decode(),
+                ],
+            })
+            self.assertEqual(response["mode"], "edit")
+            self.assertEqual(response["url"], "https://example.invalid/generated.png")
+            self.assertEqual(len(captured), 1)
+            path, content_type, body = captured[0]
+            self.assertEqual(path, "/v1/images/edits")
+            self.assertIn("multipart/form-data", content_type)
+            self.assertEqual(body.count(b'name="image[]"'), 2)
+            self.assertIn(first, body)
+            self.assertIn(second, body)
+        finally:
+            connection = server.db()
+            try:
+                connection.execute("DELETE FROM models WHERE connection_id=?", (connection_id,))
+                connection.execute("DELETE FROM provider_connections WHERE id=?", (connection_id,))
+                connection.commit()
+            finally:
+                connection.close()
+            provider.shutdown()
+            thread.join(timeout=5)
+            provider.server_close()
 
     def test_memory_workflow_and_usage_foundations(self):
         memory_id = self.request("memories", {"content": "用户偏好简洁回答"})["id"]

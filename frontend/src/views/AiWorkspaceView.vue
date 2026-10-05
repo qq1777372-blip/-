@@ -126,9 +126,13 @@ const workspaceSkills = ref<Record<string, unknown>[]>([]);
 const workspaceTools = ref<Record<string, unknown>[]>([]);
 const syncingModels = ref(false);
 const selectedModelId = ref("");
+const selectedModelGroup = ref("");
 const selectedKnowledgeId = ref("");
 const selectedSkillIds = ref<string[]>([]);
 const selectedToolIds = ref<string[]>([]);
+let conversationSaveQueue: Promise<void> = Promise.resolve();
+const loadedConversationIds = new Set<string>();
+const conversationDetailLoads = new Map<string, Promise<void>>();
 
 function filterWorkspaceModel(query: string, option: any) {
   const model = workspaceModels.value.find((item) => String(item.id) === String(option?.value));
@@ -136,6 +140,39 @@ function filterWorkspaceModel(query: string, option: any) {
   return `${model.name || ""} ${model.base_model || ""} ${model.provider_id || ""} ${model.connection_name || ""}`
     .toLowerCase()
     .includes(String(query || "").trim().toLowerCase());
+}
+
+const modelGroups = computed(() => {
+  const groups = [...new Set(workspaceModels.value.map((model) => String(model.connection_id || "").trim()))];
+  return groups.map((value) => ({
+    value,
+    label: providerConnections.value.find((connection) => connection.id === value)?.name || "未分组",
+  }));
+});
+
+const modelsInSelectedGroup = computed(() =>
+  workspaceModels.value.filter((model) => String(model.connection_id || "").trim() === selectedModelGroup.value),
+);
+
+function selectModelForGroup(group: string) {
+  const models = workspaceModels.value.filter((model) => String(model.connection_id || "").trim() === group);
+  if (!models.length) return;
+  const current = models.find((model) => String(model.id) === selectedModelId.value);
+  const preferred = current || models.find((model) => Number(model.is_default || 0) === 1) || models[0];
+  selectedModelId.value = String(preferred.id);
+}
+
+function toggleImageMode() {
+  const next = !imageMode.value;
+  if (next) {
+    const imageModels = workspaceModels.value.filter((model) => String(model.model_type || "") === "image");
+    const preferred = imageModels.find((model) => String(model.base_model || "").toLowerCase() === "gpt-image-2")
+      || imageModels.find((model) => Number(model.is_default || 0) === 1)
+      || imageModels.find((model) => Number(model.pinned || 0) === 1)
+      || imageModels[0];
+    if (preferred) selectedModelId.value = String(preferred.id);
+  }
+  imageMode.value = next;
 }
 
 function speechChunks(value: string, maxLength = 3600) {
@@ -188,7 +225,12 @@ function formatConversationTime(value: number) {
     ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
 }
-function conversationLastTime(chat: Conversation) { const last = chat.messages[chat.messages.length - 1] as (Message & { created_at?: number }) | undefined; return Number(last?.createdAt || (last?.created_at ? last.created_at * 1000 : 0) || chat.updatedAt || chat.createdAt); }
+// Keep the list order stable while a conversation's full message history is
+// loaded. Opening a chat must not make it look newly updated or move it to the
+// top; the server's conversation timestamp is the source of truth.
+function conversationLastTime(chat: Conversation) {
+  return Number(chat.updatedAt || chat.createdAt || 0);
+}
 const markdown = new MarkdownIt({ html: false, breaks: true, linkify: true });
 const promptMatches = computed(() => {
   if (!prompt.value.startsWith("/")) return [];
@@ -247,23 +289,22 @@ function openSearchConversation(item: Record<string, unknown>) {
   globalSearchVisible.value = false;
 }
 
-function saveConversations() {
-  try {
-    localStorage.setItem(storageKey.value, JSON.stringify(conversations.value.slice(0, 30)));
-  } catch (error) {
-    // Storage quota must never abort an in-flight AI request.
-    try {
-      localStorage.removeItem(`${storageKey.value}:folders`);
-      localStorage.setItem(storageKey.value, JSON.stringify(conversations.value.slice(0, 10)));
-    } catch { /* server sync remains the source of truth */ }
-  }
-  void syncConversations();
+function saveConversations(chat: Conversation | null = activeConversation.value): Promise<void> {
+  // Conversations live on the AI server. Do not write another browser copy.
+  if (!chat) return Promise.resolve();
+  // Serialize writes. Parallel saves can arrive out of order and make an
+  // older browser snapshot overwrite a newer server conversation.
+  conversationSaveQueue = conversationSaveQueue
+    .then(() => syncConversations([chat]))
+    .catch(() => undefined);
+  return conversationSaveQueue;
 }
 
-async function syncConversations() {
+async function syncConversations(items: Conversation[]) {
   await Promise.all(
-    conversations.value.slice(0, 100).map((chat) =>
-      knowledgeApi("chats/save", {
+    items.slice(0, 100).map(async (chat) => {
+      if (!loadedConversationIds.has(chat.id)) await loadServerChatDetail(chat.id);
+      await knowledgeApi("chats/save", {
         method: "POST",
         body: JSON.stringify({
           id: chat.id,
@@ -278,8 +319,8 @@ async function syncConversations() {
           created_at: Math.floor(chat.createdAt / 1000),
           updated_at: Math.floor(chat.updatedAt / 1000),
         }),
-      }).catch(() => null),
-    ),
+      });
+    }),
   );
 }
 
@@ -289,7 +330,7 @@ async function loadServerConversations() {
       chats: Array<{
         id: string;
         title: string;
-        messages: Message[];
+        messages?: Message[];
         folder?: string;
         archived?: number;
         favorite?: number;
@@ -298,47 +339,74 @@ async function loadServerConversations() {
         created_at: number;
         updated_at: number;
       }>;
-    }>(`chats?user_id=${encodeURIComponent(workspaceUserId.value)}`);
+    }>(`chats?user_id=${encodeURIComponent(workspaceUserId.value)}&summary=1`);
     if (result.chats?.length) {
-      conversations.value = result.chats.map((chat) => ({
-        id: chat.id,
-        title: chat.title,
-        messages: chat.messages || [],
-        folder: chat.folder || "",
-        archived: chat.archived === 1,
-        favorite: chat.favorite === 1,
-        parentChatId: chat.parent_chat_id || "",
-        modelId: chat.model_id || "",
-        createdAt: chat.created_at * 1000,
-        updatedAt: chat.updated_at * 1000,
-      }));
+      loadedConversationIds.clear();
+      conversationDetailLoads.clear();
+      conversations.value = result.chats.map((chat) => {
+        if (Array.isArray(chat.messages)) loadedConversationIds.add(chat.id);
+        return {
+          id: chat.id,
+          title: chat.title,
+          messages: chat.messages || [],
+          folder: chat.folder || "",
+          archived: chat.archived === 1,
+          favorite: chat.favorite === 1,
+          parentChatId: chat.parent_chat_id || "",
+          modelId: chat.model_id || "",
+          createdAt: chat.created_at * 1000,
+          updatedAt: chat.updated_at * 1000,
+        };
+      });
       const currentId = activeId.value;
       activeId.value = conversations.value.some((chat) => chat.id === currentId) ? currentId : conversations.value[0].id;
       try {
-        localStorage.setItem(storageKey.value, JSON.stringify(conversations.value.slice(0, 30)));
+        // Server is the only source of truth. Remove the old browser copy so
+        // a later startup cannot mix stale local chats with server chats.
+        localStorage.removeItem(storageKey.value);
+        localStorage.removeItem(`${storageKey.value}:active-id`);
       } catch {
         // The server copy is authoritative; a full browser cache must not
         // interrupt loading or change the active conversation.
       }
+      if (!loadedConversationIds.has(activeId.value)) await loadServerChatDetail(activeId.value);
     } else {
-      await syncConversations();
+      // An empty server is a valid state. Create the first chat explicitly;
+      // never repopulate the server from an untrusted stale local snapshot.
+      conversations.value = [];
+      localStorage.removeItem(storageKey.value);
+      createConversation();
     }
-  } catch {}
+  } catch (error) {
+    // Keep the cached view usable during a temporary outage, but do not push
+    // that cache back automatically and overwrite the server later.
+    ElMessage.warning(error instanceof Error ? `会话同步失败：${error.message}` : "会话同步失败");
+  }
+}
+
+async function loadServerChatDetail(id: string) {
+  if (!id || loadedConversationIds.has(id)) return;
+  const pending = conversationDetailLoads.get(id);
+  if (pending) return pending;
+  const loading = (async () => {
+    const result = await knowledgeApi<{ chat: { messages: Message[] } }>(`chats/detail?id=${encodeURIComponent(id)}`);
+    const chat = conversations.value.find((item) => item.id === id);
+    if (!chat) return;
+    chat.messages = result.chat.messages || [];
+    loadedConversationIds.add(id);
+    // The first scroll may run before the messages arrive.
+    if (activeId.value === id) await scrollBottom(false);
+  })();
+  conversationDetailLoads.set(id, loading);
+  try { await loading; } finally { conversationDetailLoads.delete(id); }
 }
 
 function loadConversations() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey.value) || "[]");
-    conversations.value = Array.isArray(saved) ? saved : [];
-  } catch {
-    conversations.value = [];
-  }
-  if (conversations.value.length) {
-    const rememberedId = localStorage.getItem(`${storageKey.value}:active-id`) || "";
-    const currentId = activeId.value || rememberedId;
-    activeId.value = conversations.value.some((chat) => chat.id === currentId) ? currentId : conversations.value[0].id;
-  }
-  else createConversation();
+  localStorage.removeItem(storageKey.value);
+  localStorage.removeItem(`${storageKey.value}:active-id`);
+  conversations.value = [];
+  // The server decides whether a first conversation is needed. Creating one
+  // here would race loadServerConversations() and upload a local placeholder.
 }
 
 function createConversation() {
@@ -352,6 +420,7 @@ function createConversation() {
   };
   conversation.modelId = selectedModelId.value;
   conversations.value.unshift(conversation);
+  loadedConversationIds.add(conversation.id);
   activeId.value = conversation.id;
   prompt.value = "";
   saveConversations();
@@ -425,7 +494,9 @@ async function importConversations(event: Event) {
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 100);
     activeId.value = conversations.value[0]?.id || "";
-    saveConversations();
+    valid.forEach((item) => loadedConversationIds.add(item.id));
+    conversationSaveQueue = conversationSaveQueue.then(() => syncConversations(valid)).catch(() => undefined);
+    await conversationSaveQueue;
     ElMessage.success(`已导入 ${valid.length} 个会话`);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "会话导入失败");
@@ -515,6 +586,7 @@ function branchConversation() {
     updatedAt: now,
   };
   conversations.value.unshift(branch);
+  loadedConversationIds.add(branch.id);
   activeId.value = branch.id;
   saveConversations();
   ElMessage.success("已创建会话分支");
@@ -594,6 +666,10 @@ async function loadModels() {
         workspaceModels.value[0];
       if (preferred) selectedModelId.value = String(preferred.id);
     }
+    const selectedModel = workspaceModels.value.find(
+      (item) => String(item.id) === selectedModelId.value,
+    );
+    if (selectedModel) selectedModelGroup.value = String(selectedModel.connection_id || "").trim();
   } catch {}
 }
 async function loadKnowledgeCollections() {
@@ -620,6 +696,11 @@ async function loadTools() {
         .tools || [];
   } catch {}
 }
+
+function openResourceManager(tab: "skills" | "tools") {
+  void router.push({ name: "ai-workspace-models", query: { section: tab } });
+}
+
 async function loadPrompts() {
   try {
     workspacePrompts.value =
@@ -806,12 +887,23 @@ async function scrollBottom(smooth = true) {
   });
 }
 
-async function sendPrompt(text = prompt.value) {
+async function sendPrompt(
+  text = prompt.value,
+  options: { imageUrls?: string[]; forceImage?: boolean } = {},
+) {
   const question = text.trim();
   const conversation = activeConversation.value;
   if (!question || !conversation || sending.value) return;
+  if (!loadedConversationIds.has(conversation.id)) {
+    try { await loadServerChatDetail(conversation.id); }
+    catch (error) {
+      ElMessage.warning(error instanceof Error ? `会话加载失败：${error.message}` : "会话加载失败");
+      return;
+    }
+    if (activeId.value !== conversation.id) return;
+  }
   prompt.value = "";
-  const attachedImages = [...pendingImages.value];
+  const attachedImages = options.imageUrls ? [...options.imageUrls] : [...pendingImages.value];
   pendingImages.value = [];
   const attachedFileIds = [...pendingFileIds.value];
   pendingFileIds.value = [];
@@ -830,9 +922,19 @@ async function sendPrompt(text = prompt.value) {
   sending.value = true;
   requestConversationId.value = conversation.id;
   saveConversations();
-  await scrollBottom();
+  await scrollBottom(false);
+  const shouldGenerateImage = options.forceImage ?? imageMode.value;
   try {
-    if (imageMode.value) {
+    if (shouldGenerateImage) {
+      const imageModels = workspaceModels.value.filter((model) => String(model.model_type || "") === "image");
+      const selectedImageModel = imageModels.find((model) => String(model.base_model || "").toLowerCase() === "gpt-image-2")
+        || imageModels.find((model) => String(model.id) === selectedModelId.value)
+        || imageModels.find((model) => Number(model.is_default || 0) === 1)
+        || imageModels.find((model) => Number(model.pinned || 0) === 1)
+        || imageModels[0];
+      if (selectedImageModel && selectedModelId.value !== String(selectedImageModel.id)) {
+        selectedModelId.value = String(selectedImageModel.id);
+      }
       const imageAbort = new AbortController();
       activeRequest.value = imageAbort;
       const assistant: Message = {
@@ -842,17 +944,14 @@ async function sendPrompt(text = prompt.value) {
         createdAt: Date.now(),
       };
       conversation.messages.push(assistant);
-      const activeModel = workspaceModels.value.find(
-        (item) => String(item.id) === selectedModelId.value,
-      );
       const result = await knowledgeApi<{ url: string }>("images/generations", {
         method: "POST",
         signal: imageAbort.signal,
         body: JSON.stringify({
           prompt: question,
-          model_id: activeModel ? selectedModelId.value : undefined,
+          model_id: selectedImageModel ? String(selectedImageModel.id) : undefined,
           size: imageSize.value,
-          image_urls: attachedImages.slice(0, 1),
+          image_urls: attachedImages,
         }),
       });
       assistant.content = "";
@@ -860,7 +959,7 @@ async function sendPrompt(text = prompt.value) {
       // Persist the completed image turn before returning.  The initial save
       // is fire-and-forget; a concurrent server refresh could otherwise
       // replace this local message with the stale conversation.
-      await syncConversations();
+      await saveConversations(conversation);
       return;
     }
     let sources: KnowledgeDocument[] = [];
@@ -962,9 +1061,36 @@ async function sendPrompt(text = prompt.value) {
       buffer = lines.pop() || "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        assistant.content += JSON.parse(line).content || "";
+        // Gateways occasionally return SSE-style `data:` frames even though
+        // the workspace endpoint advertises NDJSON. Ignore keep-alives and
+        // malformed frames so one provider quirk does not abort the whole
+        // response stream.
+        const payload = line.trim().replace(/^data:\s*/i, "");
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const chunk = JSON.parse(payload) as { content?: unknown; error?: unknown };
+          if (chunk.error) throw new Error(String(chunk.error));
+          if (typeof chunk.content === "string") assistant.content += chunk.content;
+        } catch (error) {
+          if (error instanceof SyntaxError) continue;
+          throw error;
+        }
       }
-      await scrollBottom();
+      // Streaming updates arrive many times per second. Instant scrolling
+      // prevents successive smooth animations from cancelling each other and
+      // leaving the viewport above the newest message.
+      await scrollBottom(false);
+    }
+    // Flush a final frame when the upstream closes without a trailing newline.
+    const finalPayload = buffer.trim().replace(/^data:\s*/i, "");
+    if (finalPayload && finalPayload !== "[DONE]") {
+      try {
+        const chunk = JSON.parse(finalPayload) as { content?: unknown; error?: unknown };
+        if (chunk.error) throw new Error(String(chunk.error));
+        if (typeof chunk.content === "string") assistant.content += chunk.content;
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
     }
     if (!assistant.content) {
       const model = workspaceModels.value.find(
@@ -979,7 +1105,7 @@ async function sendPrompt(text = prompt.value) {
         last?.role === "assistant" &&
         (!last.content || last.content === "正在生成图片...")
       )
-        last.content = `${imageMode.value ? "图片生成失败" : "暂时无法回答"}：${error instanceof Error ? error.message : "请求失败"}`;
+        last.content = `${shouldGenerateImage ? "图片生成失败" : "暂时无法回答"}：${error instanceof Error ? error.message : "请求失败"}`;
     }
   } finally {
     conversation.updatedAt = Date.now();
@@ -987,7 +1113,7 @@ async function sendPrompt(text = prompt.value) {
     requestConversationId.value = "";
     activeRequest.value = null;
     saveConversations();
-    await scrollBottom();
+    await scrollBottom(false);
   }
 }
 
@@ -1147,6 +1273,11 @@ function editMessage(index: number) {
   if (!conversation || !message || message.role !== "user" || sending.value)
     return;
   prompt.value = message.content;
+  pendingImages.value = [...(message.imageUrls || [])];
+  pendingFileIds.value = [...(message.fileIds || [])];
+  // Editing an image prompt must keep the original reference image and use
+  // the image endpoint again when the revised prompt is sent.
+  if (pendingImages.value.length && !imageMode.value) toggleImageMode();
   conversation.messages.splice(index);
   conversation.updatedAt = Date.now();
   saveConversations();
@@ -1159,10 +1290,13 @@ async function regenerateMessage(index: number) {
     .map((item) => item.role)
     .lastIndexOf("user");
   if (userIndex < 0) return;
-  const question = conversation.messages[userIndex].content;
+  const userMessage = conversation.messages[userIndex];
+  const question = userMessage.content;
+  const imageUrls = [...(userMessage.imageUrls || [])];
+  const regenerateImage = Boolean(conversation.messages[index]?.imageUrl) || imageUrls.length > 0;
   conversation.messages.splice(userIndex);
   saveConversations();
-  await sendPrompt(question);
+  await sendPrompt(question, { imageUrls, forceImage: regenerateImage });
 }
 
 async function addImageFiles(files: File[]) {
@@ -1268,6 +1402,9 @@ watch(activeId, () => {
     workspaceModels.value.some((item) => String(item.id) === rememberedId)
   )
     selectedModelId.value = rememberedId;
+  void loadServerChatDetail(activeId.value).catch((error) => {
+    ElMessage.warning(error instanceof Error ? `会话加载失败：${error.message}` : "会话加载失败");
+  });
   void scrollBottom(false);
 });
 watch(selectedModelId, (id) => {
@@ -1278,6 +1415,8 @@ watch(selectedModelId, (id) => {
   }
   const model = workspaceModels.value.find((item) => item.id === id);
   if (!model) return;
+  const group = String(model.connection_id || "").trim();
+  if (selectedModelGroup.value !== group) selectedModelGroup.value = group;
   imageMode.value = String(model.model_type || "") === "image";
   selectedKnowledgeId.value = String(model.knowledge_id || "");
   try {
@@ -1470,6 +1609,7 @@ onMounted(async () => {
             {{ message.role === "user" ? "我" : "AI" }}
           </div>
           <div class="message-body">
+            <div class="message-bubble">
             <div v-if="message.imageUrls?.length" class="message-images">
               <a
                 v-for="(url, imageIndex) in message.imageUrls"
@@ -1479,7 +1619,7 @@ onMounted(async () => {
                 rel="noopener"
                 title="点击查看原图"
               >
-                <img :src="url" alt="用户上传的图片" loading="lazy" />
+                <img :src="url" alt="用户上传的图片" loading="lazy" @load="scrollBottom(false)" />
               </a>
             </div>
             <div v-if="message.imageUrl" class="generated-image">
@@ -1492,7 +1632,8 @@ onMounted(async () => {
                 ><img
                   :src="message.imageUrl"
                   alt="生成的图片"
-                  loading="lazy" /></a
+                  loading="lazy"
+                  @load="scrollBottom(false)" /></a
               ><a
                 :href="message.imageUrl"
                 download
@@ -1502,11 +1643,13 @@ onMounted(async () => {
               >
             </div>
             <div
-              v-else-if="message.role === 'assistant'"
+              v-else-if="message.role === 'assistant' && message.content"
               class="message-content markdown-body"
               v-html="renderMessage(message.content)"
             ></div>
+            <div v-else-if="message.role === 'assistant'" class="message-content typing"><i></i><i></i><i></i></div>
             <div v-else class="message-content">{{ message.content }}</div>
+            </div>
             <div v-if="message.sources?.length" class="message-sources">
               <b>引用来源</b
               ><button
@@ -1565,10 +1708,6 @@ onMounted(async () => {
             </div>
           </div>
         </article>
-        <article v-if="sending && requestConversationId === activeId" class="message assistant">
-          <div class="message-avatar">AI</div>
-          <div class="message-body typing"><i></i><i></i><i></i></div>
-        </article>
       </section>
     </main>
 
@@ -1624,7 +1763,7 @@ onMounted(async () => {
             ><el-button
               :class="{ active: imageMode }"
               round
-              @click="imageMode = !imageMode"
+              @click="toggleImageMode"
               ><el-icon><Picture /></el-icon>生图</el-button
             ><el-select
               v-if="imageMode"
@@ -1657,17 +1796,24 @@ onMounted(async () => {
                 :key="String(item.id)"
                 :label="String(item.name)"
                 :value="String(item.id)" /></el-select
-            ><el-popover trigger="click" width="240"
-              ><el-checkbox-group
-                v-model="selectedSkillIds"
-                class="capability-list"
-                ><el-checkbox
-                  v-for="skill in workspaceSkills"
-                  :key="String(skill.id)"
-                  :value="String(skill.id)"
-                  >{{ skill.name }}</el-checkbox
-                ></el-checkbox-group
-              ><template #reference
+            ><el-popover trigger="click" width="260"
+              ><div v-if="workspaceSkills.length" class="capability-list">
+                <el-checkbox-group v-model="selectedSkillIds">
+                  <el-checkbox
+                    v-for="skill in workspaceSkills"
+                    :key="String(skill.id)"
+                    :value="String(skill.id)"
+                    >{{ skill.name }}</el-checkbox
+                  >
+                </el-checkbox-group>
+              </div>
+              <div v-else class="capability-empty">
+                <span>暂无技能，请先创建技能</span>
+                <el-button link type="primary" @click="openResourceManager('skills')"
+                  >去创建</el-button
+                >
+              </div>
+              <template #reference
                 ><el-button :class="{ active: selectedSkillIds.length }" round
                   >Skills{{
                     selectedSkillIds.length ? ` ${selectedSkillIds.length}` : ""
@@ -1692,6 +1838,18 @@ onMounted(async () => {
                 ></template
               ></el-popover
             ><el-select
+              v-model="selectedModelGroup"
+              class="composer-model-group-select"
+              placement="top-end"
+              popper-class="workspace-model-popper"
+              aria-label="模型分组"
+              @change="selectModelForGroup"
+              ><el-option
+                v-for="group in modelGroups"
+                :key="group.value"
+                :label="group.label"
+                :value="group.value" /></el-select
+            ><el-select
               v-model="selectedModelId"
               class="composer-model-select"
               clearable
@@ -1699,9 +1857,9 @@ onMounted(async () => {
               :filter-method="filterWorkspaceModel"
               placement="top-end"
               popper-class="workspace-model-popper"
-              placeholder="基础模型"
+              placeholder="选择模型"
               ><el-option
-                v-for="model in workspaceModels"
+                v-for="model in modelsInSelectedGroup"
                 :key="String(model.id)"
                 :label="String(model.name)"
                 :value="String(model.id)"
@@ -2464,6 +2622,10 @@ onMounted(async () => {
   width: 180px;
   flex: 0 1 180px;
 }
+.composer-model-group-select {
+  width: 112px;
+  flex: 0 1 112px;
+}
 .composer-tools :deep(.el-select__placeholder) {
   font-size: 12px;
 }
@@ -2685,6 +2847,14 @@ onMounted(async () => {
 }
 :global(.capability-list .el-checkbox) {
   margin-right: 0;
+}
+.capability-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #64748b;
+  font-size: 12px;
 }
 .model-field {
   display: grid;
@@ -3478,6 +3648,10 @@ onMounted(async () => {
     width: 150px;
     flex-basis: 150px;
   }
+  .composer-model-group-select {
+    width: 104px;
+    flex-basis: 104px;
+  }
 }
 
 /* Keep the composer inside the visible chat viewport at every window height. */
@@ -3657,7 +3831,7 @@ onMounted(async () => {
 
 /* Keep all input capabilities in one compact composer surface. */
 .chat-composer {
-  padding: 10px clamp(16px, 4vw, 48px) 14px !important;
+  padding: 10px 0 14px !important;
   border-top: 1px solid #e5e7eb;
   background: #fff;
 }
@@ -3666,10 +3840,12 @@ onMounted(async () => {
 }
 .composer-box {
   width: 100%;
-  max-width: 760px !important;
-  margin: 0 auto;
+  max-width: none !important;
+  margin: 0;
   padding: 10px 12px;
-  border-radius: 10px !important;
+  border: 0;
+  border-radius: 0 !important;
+  box-shadow: none;
 }
 .composer-box textarea {
   min-height: 42px;
@@ -3701,7 +3877,7 @@ onMounted(async () => {
   width: 86px;
 }
 .chat-composer > small {
-  max-width: 760px;
+  max-width: none;
 }
 .message-actions {
   display: flex;
@@ -3725,6 +3901,66 @@ onMounted(async () => {
   .composer-actions {
     align-items: flex-end;
     flex-wrap: nowrap;
+  }
+}
+
+/* Chat alignment: assistants stay on the left, user turns become right-side
+   bubbles. Keep the message actions attached to their own turn. */
+.message {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 10px;
+  width: min(100%, 900px);
+  max-width: 900px !important;
+  margin: 0 auto 22px !important;
+}
+.message .message-body {
+  min-width: 0;
+  max-width: min(78%, 760px);
+}
+.message.user {
+  justify-content: flex-end;
+}
+.message.user .message-body {
+  order: 1;
+  max-width: min(72%, 680px);
+}
+.message.user .message-avatar {
+  order: 2;
+}
+.message.user .message-bubble {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-left: auto;
+  padding: 10px 14px !important;
+  border-radius: 14px 14px 4px 14px !important;
+  color: #fff;
+  background: #4f46e5 !important;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.message.user .message-bubble .message-content {
+  display: block;
+  padding: 0 !important;
+  color: inherit;
+  background: transparent !important;
+}
+.message.assistant .message-content {
+  padding: 4px 0 !important;
+  color: var(--text-main);
+  background: transparent;
+}
+.message.user .message-actions {
+  justify-content: flex-end;
+}
+@media (max-width: 720px) {
+  .message {
+    width: 100%;
+  }
+  .message .message-body,
+  .message.user .message-body {
+    max-width: calc(100% - 42px);
   }
 }
 </style>

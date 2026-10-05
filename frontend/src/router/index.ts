@@ -219,8 +219,10 @@ const routes = [
       {
         path: 'ai-workspace/resources',
         name: 'ai-workspace-resources',
-        component: () => import('../views/AiResourcesView.vue'),
-        meta: { title: 'AI 工作空间', section: '工具' },
+        redirect: (to: RouteLocationGeneric) => ({
+          name: 'ai-workspace-models',
+          query: { section: String(to.query.tab || 'prompts') },
+        }),
       },
       {
         path: 'ai-workspace/models',

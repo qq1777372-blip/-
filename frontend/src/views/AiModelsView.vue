@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
 import AiResourcesView from "./AiResourcesView.vue";
 import {
@@ -13,11 +13,19 @@ import {
 
 type Item = Record<string, any>;
 const router = useRouter();
+const route = useRoute();
 const authStore = useAuthStore();
 const tab = ref("models");
 type WorkspaceSection = "core" | "prompts" | "skills" | "tools" | "notes" | "shares";
 const workspaceSection = ref<WorkspaceSection>("core");
 const resourceSections = ["prompts", "skills", "tools", "notes", "shares"] as const;
+function selectSectionFromRoute(value: unknown) {
+  const section = String(value || "");
+  workspaceSection.value = resourceSections.includes(section as (typeof resourceSections)[number])
+    ? (section as WorkspaceSection)
+    : "core";
+}
+watch(() => route.query.section, selectSectionFromRoute, { immediate: true });
 function selectCoreTab(value: "models" | "connections") {
   workspaceSection.value = "core";
   tab.value = value;
@@ -493,18 +501,19 @@ onMounted(load);
       </div>
     </header>
     <div class="tabs">
-      <button :class="{ active: workspaceSection === 'core' && tab === 'models' }" @click="selectCoreTab('models')">
-        模型 <b>{{ models.length }}</b></button
-      ><button
+      <button
+        :class="{ active: workspaceSection === 'core' && tab === 'models' }"
+        @click="selectCoreTab('models')"
+      >模型 <b>{{ models.length }}</b></button>
+      <button
         :class="{ active: workspaceSection === 'core' && tab === 'connections' }"
         @click="selectCoreTab('connections')"
-      ><button :class="{ active: workspaceSection === 'prompts' }" @click="workspaceSection = 'prompts'">Prompts</button
-      ><button :class="{ active: workspaceSection === 'skills' }" @click="workspaceSection = 'skills'">Skills</button
-      ><button :class="{ active: workspaceSection === 'tools' }" @click="workspaceSection = 'tools'">Tools</button
-      ><button :class="{ active: workspaceSection === 'notes' }" @click="workspaceSection = 'notes'">Notes</button
-      ><button :class="{ active: workspaceSection === 'shares' }" @click="workspaceSection = 'shares'">分享管理</button>
-        连接 <b>{{ connections.length }}</b></button
-      >
+      >连接 <b>{{ connections.length }}</b></button>
+      <button :class="{ active: workspaceSection === 'prompts' }" @click="workspaceSection = 'prompts'">Prompts</button>
+      <button :class="{ active: workspaceSection === 'skills' }" @click="workspaceSection = 'skills'">Skills</button>
+      <button :class="{ active: workspaceSection === 'tools' }" @click="workspaceSection = 'tools'">Tools</button>
+      <button :class="{ active: workspaceSection === 'notes' }" @click="workspaceSection = 'notes'">Notes</button>
+      <button :class="{ active: workspaceSection === 'shares' }" @click="workspaceSection = 'shares'">分享管理</button>
     </div>
     <template v-if="workspaceSection === 'core' && tab === 'models'"
       ><div class="toolbar">

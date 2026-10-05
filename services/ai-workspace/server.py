@@ -199,11 +199,16 @@ def generate_document(title, content, file_format):
 
 
 def multipart_file(fields, field_name, filename, raw, mime):
-    boundary = "----RuoShopAdmin" + hashlib.sha256(raw[:1024]).hexdigest()[:16]
+    return multipart_files(fields, [(field_name, filename, raw, mime)])
+
+
+def multipart_files(fields, files):
+    boundary = "----RuoShopAdmin" + hashlib.sha256(os.urandom(16)).hexdigest()[:16]
     parts = []
     for key, value in fields.items():
         parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n".encode())
-    parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n".encode() + raw + b"\r\n")
+    for field_name, filename, raw, mime in files:
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n".encode() + raw + b"\r\n")
     parts.append(f"--{boundary}--\r\n".encode())
     return b"".join(parts), boundary
 
@@ -893,10 +898,26 @@ class Handler(BaseHTTPRequestHandler):
                 user_id, role = self.identity(); rows = connection.execute("SELECT * FROM ai_workflows WHERE owner_id=? OR ? IN ('admin','superadmin') ORDER BY updated_at DESC", (user_id, role)); json_response(self, 200, {"workflows": [dict(row) for row in rows]})
             elif self.path.startswith("/api/chats?") or self.path == "/api/chats":
                 user_id = self.identity()[0]
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                summary_only = query.get("summary", ["0"])[0].lower() in ("1", "true", "yes")
                 rows = []
                 for row in connection.execute("SELECT * FROM chats WHERE user_id=? ORDER BY updated_at DESC LIMIT 100", (user_id,)):
-                    item = dict(row); item["messages"] = json.loads(item["messages"]); rows.append(item)
+                    item = dict(row)
+                    if summary_only:
+                        messages = json.loads(item.pop("messages", "[]") or "[]")
+                        item["message_count"] = len(messages)
+                        item["last_message"] = messages[-1] if messages else None
+                    else:
+                        item["messages"] = json.loads(item["messages"])
+                    rows.append(item)
                 json_response(self, 200, {"chats": rows})
+            elif self.path.startswith("/api/chats/detail?"):
+                user_id = self.identity()[0]
+                chat_id = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id", [""])[0]
+                row = connection.execute("SELECT * FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)).fetchone()
+                if not row: raise ValueError("会话不存在")
+                item = dict(row); item["messages"] = json.loads(item["messages"] or "[]")
+                json_response(self, 200, {"chat": item})
             elif self.path.startswith("/api/shares?"):
                 share_id = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id", [""])[0]
                 row = connection.execute("SELECT id,title,messages,created_at,expires_at,revoked FROM shared_chats WHERE id=?", (share_id,)).fetchone()
@@ -1485,29 +1506,38 @@ class Handler(BaseHTTPRequestHandler):
                 selected_model = connection.execute("SELECT * FROM models WHERE id=?", (str(data.get("model_id", "")),)).fetchone() if data.get("model_id") else None
                 if selected_model and not self.can_access_model(selected_model): raise ValueError("无权使用该模型")
                 if not selected_model or ("model_type" in selected_model.keys() and selected_model["model_type"] != "image"):
-                    selected_model = connection.execute("SELECT * FROM models WHERE enabled=1 AND model_type='image' ORDER BY is_default DESC,pinned DESC,name LIMIT 1").fetchone()
+                    selected_model = connection.execute("SELECT * FROM models WHERE enabled=1 AND model_type='image' ORDER BY CASE WHEN lower(base_model)='gpt-image-2' THEN 0 ELSE 1 END,is_default DESC,pinned DESC,updated_at DESC,name LIMIT 1").fetchone()
                 if not selected_model: raise ValueError("没有可用的图片模型，请先同步或创建 gpt-image、DALL-E、Flux 等图片模型")
                 provider = connection.execute("SELECT * FROM provider_connections WHERE id=? AND enabled=1", (selected_model["connection_id"],)).fetchone() if selected_model and selected_model["connection_id"] else None
                 provider_type = provider["provider_type"] if provider and "provider_type" in provider.keys() else "openai"
                 if provider_type == "ollama": raise ValueError("Ollama 当前不支持图片生成接口")
                 provider_base = provider_api_base(provider["base_url"] if provider else setting("base_url", "https://api.openai.com/v1"), provider_type)
                 api_key = provider["api_key"] if provider else setting("api_key")
-                payload = {"prompt": prompt_text, "model": selected_model["base_model"] if selected_model else setting("model", "gpt-image-1"), "size": str(data.get("size", "1024x1024")), "n": 1}
-                reference_images = data.get("image_urls", []) if isinstance(data.get("image_urls", []), list) else []
-                reference_image = str(reference_images[0]) if reference_images else ""
-                print(f"[image] request reference={bool(reference_image)} images={len(reference_images)} model={payload['model']}", flush=True)
-                if reference_image:
-                    match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,(.+)", reference_image, re.DOTALL)
-                    if not match: raise ValueError("参考图格式无效，仅支持 PNG、JPG 或 WebP")
-                    try: image_raw = base64.b64decode(match.group(2), validate=True)
-                    except Exception as error: raise ValueError("参考图数据损坏") from error
-                    if len(image_raw) > 15_000_000: raise ValueError("参考图不能超过 15MB")
-                    suffix = "jpg" if match.group(1) == "image/jpeg" else match.group(1).split("/", 1)[1]
-                    # Most OpenAI-compatible gateways use `image[]`; some
-                    # older gateways only accept the singular `image`. Keep
-                    # both request forms available for the retry below.
-                    request_body, boundary = multipart_file({**payload, "response_format": "b64_json"}, "image", "reference." + suffix, image_raw, match.group(1))
-                    fallback_body, fallback_boundary = multipart_file(payload, "image", "reference." + suffix, image_raw, match.group(1))
+                payload = {"prompt": prompt_text, "model": selected_model["base_model"] if selected_model else setting("model", "gpt-image-2"), "size": str(data.get("size", "1024x1024")), "n": 1}
+                reference_images = data.get("image_urls", [])
+                if not isinstance(reference_images, list): raise ValueError("参考图列表格式无效")
+                if len(reference_images) > 4: raise ValueError("最多添加 4 张参考图")
+                has_reference = bool(reference_images)
+                print(f"[image] request reference={has_reference} images={len(reference_images)} model={payload['model']}", flush=True)
+                if has_reference:
+                    image_files = []
+                    for index, reference_image in enumerate(reference_images, start=1):
+                        match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,(.+)", str(reference_image), re.DOTALL)
+                        if not match: raise ValueError(f"第 {index} 张参考图格式无效，仅支持 PNG、JPG 或 WebP")
+                        try: image_raw = base64.b64decode(match.group(2), validate=True)
+                        except Exception as error: raise ValueError(f"第 {index} 张参考图数据损坏") from error
+                        if len(image_raw) > 15_000_000: raise ValueError(f"第 {index} 张参考图不能超过 15MB")
+                        suffix = "jpg" if match.group(1) == "image/jpeg" else match.group(1).split("/", 1)[1]
+                        image_files.append(("image[]" if len(reference_images) > 1 else "image", f"reference-{index}.{suffix}", image_raw, match.group(1)))
+                    # OpenAI-compatible multi-image edits use repeated image[]
+                    # parts. Keep the existing single-image retry for gateways
+                    # that reject response_format; never retry with one of
+                    # several images because that silently drops references.
+                    if len(image_files) == 1:
+                        request_body, boundary = multipart_files({**payload, "response_format": "b64_json"}, image_files)
+                        fallback_body, fallback_boundary = multipart_files(payload, image_files)
+                    else:
+                        request_body, boundary = multipart_files(payload, image_files)
                     endpoint = provider_base + "/images/edits"
                     content_type = "multipart/form-data; boundary=" + boundary
                 else:
@@ -1516,13 +1546,14 @@ class Handler(BaseHTTPRequestHandler):
                     content_type = "application/json"
                 request = urllib.request.Request(endpoint, data=request_body, headers={"Content-Type": content_type, "Authorization": "Bearer " + api_key, "User-Agent": "RuoShopAdmin/1.0"}, method="POST")
                 try:
-                    # Async edit submission must return a task id promptly;
-                    # the long generation time belongs to the polling phase.
-                    with urllib.request.urlopen(request, timeout=30 if reference_image else 180) as response:
+                    # Image generation is a long-running operation. Do not
+                    # turn a slow but valid provider response into a false
+                    # timeout while the provider continues generating it.
+                    with urllib.request.urlopen(request, timeout=None) as response:
                         result = json.loads(response.read().decode("utf-8"))
                 except urllib.error.HTTPError as error:
                     detail = error.read().decode("utf-8", errors="replace")[:2000]
-                    if reference_image and error.code == 400:
+                    if has_reference and len(reference_images) == 1 and error.code == 400:
                         # Retry once for gateways that reject the array field.
                         request = urllib.request.Request(
                             endpoint,
@@ -1530,30 +1561,26 @@ class Handler(BaseHTTPRequestHandler):
                             headers={"Content-Type": "multipart/form-data; boundary=" + fallback_boundary, "Authorization": "Bearer " + api_key, "User-Agent": "RuoShopAdmin/1.0"},
                             method="POST",
                         )
-                        with urllib.request.urlopen(request, timeout=180) as response:
+                        with urllib.request.urlopen(request, timeout=None) as response:
                             result = json.loads(response.read().decode("utf-8"))
                     else:
-                        action = "图生图" if reference_image else "图片生成"
+                        action = f"图生图（{len(reference_images)} 张参考图）" if has_reference else "图片生成"
                         raise ValueError(f"{action}供应商返回 HTTP {error.code}: {detail or error.reason}") from error
                 # Sub2API returns a task for async image edits. Poll until it
                 # exposes the same OpenAI-style data payload.
-                if reference_image:
+                if has_reference:
                     task_id = str(result.get("task_id") or result.get("id") or result.get("task", {}).get("id", ""))
                     if task_id and not result.get("data"):
                         status_endpoint = provider_base + "/images/tasks/" + urllib.parse.quote(task_id, safe="")
-                        unknown_rounds = 0
-                        for _ in range(300):
+                        while True:
                             time.sleep(2)
                             status_request = urllib.request.Request(status_endpoint, headers={"Authorization": "Bearer " + api_key, "User-Agent": "RuoShopAdmin/1.0"})
-                            with urllib.request.urlopen(status_request, timeout=30) as status_response:
+                            with urllib.request.urlopen(status_request, timeout=None) as status_response:
                                 status = json.loads(status_response.read().decode("utf-8"))
                             result = status.get("result") if isinstance(status.get("result"), dict) else status
                             state = str(result.get("status") or result.get("state") or result.get("task_status") or "").lower()
                             if result.get("data") or state in ("succeeded", "success", "completed", "failed", "error", "cancelled", "canceled"):
                                 break
-                            unknown_rounds += 1
-                            if unknown_rounds >= 20:
-                                raise ValueError("图生图任务状态无法识别：" + json.dumps(result, ensure_ascii=False)[:500])
                         if state in ("failed", "error", "cancelled", "canceled"):
                             raise ValueError("图生图任务失败：" + str(result.get("error") or result.get("message") or result.get("status")))
                 item = (result.get("data") or [{}])[0]
@@ -1561,8 +1588,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not image_url and item.get("b64_json"):
                     image_url = "data:image/png;base64," + item["b64_json"]
                 if not image_url: raise ValueError("图片服务未返回图片地址")
-                operation = "image_edit" if reference_image else "image_generation"
-                record_usage(connection, self.identity()[0], selected_model["id"], operation, request_started, usage=result.get("usage", {})); json_response(self, 200, {"url": image_url, "revised_prompt": item.get("revised_prompt", ""), "mode": "edit" if reference_image else "generation"})
+                operation = "image_edit" if has_reference else "image_generation"
+                record_usage(connection, self.identity()[0], selected_model["id"], operation, request_started, usage=result.get("usage", {})); json_response(self, 200, {"url": image_url, "revised_prompt": item.get("revised_prompt", ""), "mode": "edit" if has_reference else "generation"})
             elif self.path == "/api/test":
                 if not setting("api_key"):
                     raise ValueError("请先配置 API Key")

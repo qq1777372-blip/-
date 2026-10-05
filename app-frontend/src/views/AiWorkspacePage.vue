@@ -45,6 +45,9 @@ const selectedModelId = ref("");
 const selectedKnowledgeId = ref("");
 const selectedSkillIds = ref<string[]>([]);
 const selectedToolIds = ref<string[]>([]);
+let chatSaveQueue: Promise<void> = Promise.resolve();
+const loadedChatIds = new Set<string>();
+const chatDetailLoads = new Map<string, Promise<void>>();
 const selectedAudioModelId = ref("");
 const modelSearch = ref("");
 const voice = ref("alloy");
@@ -145,15 +148,19 @@ async function notify(message: string, color?: string) {
   await toast.present();
 }
 
-function save() {
-  localStorage.setItem(storageKey.value, JSON.stringify(chats.value.slice(0, 60)));
-  void Promise.all(chats.value.slice(0, 60).map((chat) =>
-    api("chats/save", { method: "POST", body: JSON.stringify({ id: chat.id, user_id: userId.value, title: chat.title, messages: chat.messages, model_id: chat.modelId || "", favorite: chat.favorite, archived: chat.archived, folder: chat.folder || "", created_at: Math.floor(chat.createdAt / 1000) }) }).catch(() => null)));
+function save(chat: Chat | null = activeChat.value) {
+  // Conversations live on the AI server. Do not write another browser copy.
+  if (!chat) return;
+  chatSaveQueue = chatSaveQueue.then(async () => {
+    if (!loadedChatIds.has(chat.id)) await loadChatDetail(chat.id);
+    await api("chats/save", { method: "POST", body: JSON.stringify({ id: chat.id, user_id: userId.value, title: chat.title, messages: chat.messages, model_id: chat.modelId || "", favorite: chat.favorite, archived: chat.archived, folder: chat.folder || "", created_at: Math.floor(chat.createdAt / 1000) }) });
+  }).catch(() => undefined);
 }
 
 function createChat() {
   const now = Date.now();
   chats.value.unshift({ id: `chat-${uid()}`, title: "新对话", messages: [], modelId: selectedModelId.value, createdAt: now, updatedAt: now });
+  loadedChatIds.add(chats.value[0].id);
   activeId.value = chats.value[0].id;
   tab.value = "chat";
   drawerOpen.value = false;
@@ -161,12 +168,13 @@ function createChat() {
 }
 
 function load() {
-  try { const v = JSON.parse(localStorage.getItem(storageKey.value) || "[]"); chats.value = Array.isArray(v) ? v : []; }
-  catch { chats.value = []; }
-  if (chats.value.length) activeId.value = chats.value[0].id; else createChat();
+  localStorage.removeItem(storageKey.value);
+  chats.value = [];
+  loadedChatIds.clear();
+  chatDetailLoads.clear();
 }
 
-function openChat(id: string) { activeId.value = id; tab.value = "chat"; drawerOpen.value = false; void scrollBottom(0); }
+function openChat(id: string) { activeId.value = id; tab.value = "chat"; drawerOpen.value = false; void loadChatDetail(id); void scrollBottom(0); }
 
 function removeChat(id: string) {
   chats.value = chats.value.filter((c) => c.id !== id);
@@ -184,6 +192,7 @@ function branchChat() {
   const src = activeChat.value; if (!src) return;
   const now = Date.now();
   chats.value.unshift({ id: `chat-${uid()}`, title: `${src.title} · 分支`, messages: structuredClone(src.messages), modelId: src.modelId, createdAt: now, updatedAt: now });
+  loadedChatIds.add(chats.value[0].id);
   activeId.value = chats.value[0].id; drawerOpen.value = false; save();
 }
 
@@ -200,8 +209,16 @@ async function importChats(event: Event) {
     const parsed = JSON.parse(await file.text()); const incoming = Array.isArray(parsed.chats) ? parsed.chats : parsed.chat ? [parsed.chat] : [];
     if (!incoming.length) throw new Error("文件中没有会话");
     const now = Date.now();
-    for (const item of incoming) { if (!Array.isArray(item.messages)) continue; chats.value.unshift({ ...item, id: `chat-${uid()}`, title: String(item.title || "导入会话"), createdAt: Number(item.createdAt) || now, updatedAt: now }); }
-    activeId.value = chats.value[0].id; save(); await notify(`已导入 ${incoming.length} 个会话`);
+    const imported: Chat[] = [];
+    for (const item of incoming) {
+      if (!Array.isArray(item.messages)) continue;
+      const chat = { ...item, id: `chat-${uid()}`, title: String(item.title || "导入会话"), createdAt: Number(item.createdAt) || now, updatedAt: now } as Chat;
+      chats.value.unshift(chat); imported.push(chat); loadedChatIds.add(chat.id);
+    }
+    if (!imported.length) throw new Error("文件中没有有效会话");
+    activeId.value = chats.value[0].id;
+    imported.forEach((chat) => save(chat));
+    await notify(`已导入 ${imported.length} 个会话`);
   } catch (e) { await notify(e instanceof Error ? e.message : "导入失败", "danger"); }
 }
 
@@ -216,12 +233,31 @@ async function shareChat() {
 
 async function loadRemote() {
   try {
-    const result = await api<{ chats: Array<{ id: string; title: string; messages: Message[]; model_id?: string; archived?: number; favorite?: number; folder?: string; created_at: number; updated_at: number }> }>(`chats?user_id=${encodeURIComponent(userId.value)}`);
-    if (!result.chats.length) return;
-    chats.value = result.chats.map((item) => ({ id: item.id, title: item.title, messages: item.messages || [], modelId: item.model_id || "", favorite: Boolean(item.favorite), archived: Boolean(item.archived), folder: item.folder || "", createdAt: item.created_at * 1000, updatedAt: item.updated_at * 1000 }));
+    const result = await api<{ chats: Array<{ id: string; title: string; messages?: Message[]; last_message?: Message | null; model_id?: string; archived?: number; favorite?: number; folder?: string; created_at: number; updated_at: number }> }>(`chats?user_id=${encodeURIComponent(userId.value)}&summary=1`);
+    loadedChatIds.clear();
+    chatDetailLoads.clear();
+    chats.value = result.chats.map((item) => ({ id: item.id, title: item.title, messages: item.messages || (item.last_message ? [item.last_message] : []), modelId: item.model_id || "", favorite: Boolean(item.favorite), archived: Boolean(item.archived), folder: item.folder || "", createdAt: item.created_at * 1000, updatedAt: item.updated_at * 1000 }));
+    result.chats.forEach((item) => { if (Array.isArray(item.messages)) loadedChatIds.add(item.id); });
+    if (!chats.value.length) { createChat(); return; }
     activeId.value = chats.value.find((c) => !c.archived)?.id || chats.value[0].id;
-    restoreModel(); await scrollBottom(0);
-  } catch {}
+    restoreModel(); await scrollBottom(0); await loadChatDetail(activeId.value);
+  } catch (e) { await notify(e instanceof Error ? `会话同步失败：${e.message}` : "会话同步失败", "warning"); }
+}
+
+async function loadChatDetail(id: string) {
+  if (!id || loadedChatIds.has(id)) return;
+  const pending = chatDetailLoads.get(id);
+  if (pending) return pending;
+  const loading = (async () => {
+    const result = await api<{ chat: { messages: Message[] } }>(`chats/detail?id=${encodeURIComponent(id)}`);
+    const chat = chats.value.find((item) => item.id === id);
+    if (!chat) return;
+    chat.messages = result.chat.messages || [];
+    loadedChatIds.add(id);
+    if (activeId.value === id) await scrollBottom(0);
+  })();
+  chatDetailLoads.set(id, loading);
+  try { await loading; } finally { chatDetailLoads.delete(id); }
 }
 
 async function loadOptions() {
@@ -255,6 +291,11 @@ async function scrollBottom(duration = 200) { await nextTick(); await contentRef
 async function send(text = prompt.value) {
   const question = text.trim(); const chat = activeChat.value;
   if (!question || !chat || sending.value) return;
+  if (!loadedChatIds.has(chat.id)) {
+    try { await loadChatDetail(chat.id); }
+    catch (error) { await notify(error instanceof Error ? `会话加载失败：${error.message}` : "会话加载失败", "warning"); return; }
+    if (activeId.value !== chat.id) return;
+  }
   const attachedImages = [...pendingImages.value]; pendingImages.value = [];
   const attachedFileIds = [...pendingFileIds.value]; pendingFileIds.value = []; prompt.value = "";
   chat.messages.push({ id: `user-${uid()}`, role: "user", content: question, imageUrls: attachedImages, fileIds: attachedFileIds });
@@ -342,6 +383,7 @@ function branchFrom(msg: Message) {
   const src = activeChat.value; if (!src) return;
   const idx = src.messages.findIndex((m) => m.id === msg.id); const now = Date.now();
   chats.value.unshift({ id: `chat-${uid()}`, title: `${src.title} · 分支`, messages: structuredClone(src.messages.slice(0, idx + 1)), modelId: src.modelId, createdAt: now, updatedAt: now });
+  loadedChatIds.add(chats.value[0].id);
   activeId.value = chats.value[0].id; save();
 }
 

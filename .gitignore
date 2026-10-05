@@ -1,4 +1,6 @@
 .env
+.env.local
+.env.*.local
 .runtime-secrets/
 .venv/
 __pycache__/
